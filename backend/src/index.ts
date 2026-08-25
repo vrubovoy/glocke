@@ -5,13 +5,13 @@ import {
   createExportAuthMiddleware,
 } from '@zudar107/schloss-server-kit'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
-import { sql } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createApp } from './app.js'
 import { db, sqlite } from './db/index.js'
-import { users } from './db/schema.js'
+import { users, userTombstones } from './db/schema.js'
 import { createHttpApp } from './http.js'
 import { createProcessor } from './processor.js'
 import { SqlitePushRepository } from './push-repository.js'
@@ -20,6 +20,7 @@ import { createWebPushAdapter } from './web-push-adapter.js'
 import { SqliteNotificationRepository } from './repository.js'
 import { createSchlusselRecipientResolver } from './schlussel.js'
 import { loadConfig } from './config.js'
+import { deletionsRouter } from './deletions.js'
 
 const config = loadConfig()
 const migrationsFolder = join(dirname(fileURLToPath(import.meta.url)), 'db/migrations')
@@ -37,13 +38,20 @@ const { requireAuth, requireAdmin } = createAuthMiddleware({
   jwksUrl: config.jwksUrl,
   issuer: config.jwtIssuer,
   onUserSeen: async (user) => {
-    const timestamp = new Date()
-    await db.insert(users).values({
-      id: user.id, email: user.email, name: user.name, createdAt: timestamp, lastSeenAt: timestamp,
-    }).onConflictDoUpdate({
-      target: users.id,
-      set: { email: user.email, name: user.name, lastSeenAt: timestamp },
+    const deleted = db.transaction((tx) => {
+      const tombstone = tx.select({ userId: userTombstones.userId })
+        .from(userTombstones).where(eq(userTombstones.userId, user.id)).get()
+      if (tombstone) return true
+      const timestamp = new Date()
+      tx.insert(users).values({
+        id: user.id, email: user.email, name: user.name, createdAt: timestamp, lastSeenAt: timestamp,
+      }).onConflictDoUpdate({
+        target: users.id,
+        set: { email: user.email, name: user.name, lastSeenAt: timestamp },
+      }).run()
+      return false
     })
+    if (deleted) throw new Error('Deleted account')
   },
 })
 const requireExportAuth = createExportAuthMiddleware({
@@ -84,7 +92,10 @@ const service = createApp({
     allowedProviderHosts: config.push.allowedProviderHosts,
     maxSubscriptionsPerUser: config.push.maxSubscriptionsPerUser,
   },
+  isTombstoned: async (userId) => Boolean(await db.select({ userId: userTombstones.userId })
+    .from(userTombstones).where(eq(userTombstones.userId, userId)).get()),
 })
+service.route('/internal/v1', deletionsRouter)
 
 const app = createHttpApp(service, config.allowedOrigins)
 
