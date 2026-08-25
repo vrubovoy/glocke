@@ -23,6 +23,7 @@ export interface CreatePushWorkerOptions {
   resolveRecipient: ResolveRecipient
   adapter: PushAdapter
   vapid: { publicKey: string; privateKey: string; subject: string }
+  vapidKeyId?: string
   now?: () => Date
   createLeaseId?: () => string
   random?: () => number
@@ -33,6 +34,7 @@ export interface CreatePushWorkerOptions {
   maxDelayMs?: number
   intervalMs?: number
   stopTimeoutMs?: number
+  logger?: Pick<Console, 'error' | 'warn'>
 }
 
 export type DeliverOneResult = 'idle' | 'delivered' | 'suppressed' | 'retry' | 'permanent'
@@ -57,6 +59,7 @@ export function createPushWorker(options: CreatePushWorkerOptions): PushWorker {
   const maxDelayMs = options.maxDelayMs ?? 6 * 60 * 60_000
   const intervalMs = options.intervalMs ?? 1_000
   const stopTimeoutMs = options.stopTimeoutMs ?? 5_000
+  const logger = options.logger ?? console
 
   let timer: ReturnType<typeof setTimeout> | null = null
   let stopped = true
@@ -67,11 +70,15 @@ export function createPushWorker(options: CreatePushWorkerOptions): PushWorker {
     lastStatus: number | null, lastError: string, delayMs: number,
   ): Promise<'retry' | 'permanent'> {
     if (attempts >= maxAttempts) {
-      await options.repository.markPermanent(deliveryId, leaseId, attempts, lastStatus, lastError)
+      if (!await options.repository.markPermanent(deliveryId, leaseId, attempts, lastStatus, lastError)) {
+        logger.warn('[Glocke push worker] Stale permanent settlement', { deliveryId, leaseId })
+      }
       return 'permanent'
     }
     const nextAttemptAt = new Date(now().getTime() + delayMs).toISOString()
-    await options.repository.markRetry(deliveryId, leaseId, attempts, nextAttemptAt, lastStatus, lastError)
+    if (!await options.repository.markRetry(deliveryId, leaseId, attempts, nextAttemptAt, lastStatus, lastError)) {
+      logger.warn('[Glocke push worker] Stale retry settlement', { deliveryId, leaseId })
+    }
     return 'retry'
   }
 
@@ -88,22 +95,48 @@ export function createPushWorker(options: CreatePushWorkerOptions): PushWorker {
 
       const subscription = await options.repository.findSubscriptionById(delivery.subscriptionId)
       if (!subscription) {
-        await options.repository.markSuppressed(delivery.id, leaseId)
+        if (!await options.repository.markSuppressed(delivery.id, leaseId)) {
+          logger.warn('[Glocke push worker] Stale missing-subscription settlement', { deliveryId: delivery.id, leaseId })
+        }
         return 'suppressed'
       }
 
-      const recipient = await options.resolveRecipient(delivery.userId)
+      if (
+        (subscription.expirationTime && Date.parse(subscription.expirationTime) <= claimedAt.getTime()) ||
+        (options.vapidKeyId && subscription.vapidKeyId !== options.vapidKeyId)
+      ) {
+        await options.repository.deleteSubscription(delivery.userId, delivery.subscriptionId)
+        return 'permanent'
+      }
+
+      let recipient: Awaited<ReturnType<ResolveRecipient>>
+      try {
+        recipient = await options.resolveRecipient(delivery.userId)
+      } catch (error) {
+        logger.error('[Glocke push worker] Recipient resolution failed', error)
+        const delayMs = calculateBackoffDelay({ attempt: delivery.attempts, baseDelayMs, maxDelayMs, random })
+        return retryOrPermanent(delivery.id, leaseId, delivery.attempts + 1, null, 'Recipient lookup failed', delayMs)
+      }
       if (!recipient?.notifyBrowserPush) {
-        await options.repository.markSuppressed(delivery.id, leaseId)
+        if (!await options.repository.markSuppressed(delivery.id, leaseId)) {
+          logger.warn('[Glocke push worker] Stale suppression settlement', { deliveryId: delivery.id, leaseId })
+        }
         return 'suppressed'
       }
 
-      const result = await options.adapter.send({
-        subscription: { endpoint: subscription.endpoint, p256dh: subscription.p256dh, auth: subscription.auth },
-        payload: { id: delivery.id, text: GENERIC_PUSH_TEXT, url: delivery.destinationUrl },
-        vapid: options.vapid,
-        timeoutMs: fetchTimeoutMs,
-      })
+      let result: PushAdapterSendResult
+      try {
+        result = await options.adapter.send({
+          subscription: { endpoint: subscription.endpoint, p256dh: subscription.p256dh, auth: subscription.auth },
+          payload: { id: delivery.id, text: GENERIC_PUSH_TEXT, url: delivery.destinationUrl },
+          vapid: options.vapid,
+          timeoutMs: fetchTimeoutMs,
+        })
+      } catch (error) {
+        logger.error('[Glocke push worker] Push adapter threw unexpectedly', error)
+        const delayMs = calculateBackoffDelay({ attempt: delivery.attempts, baseDelayMs, maxDelayMs, random })
+        return retryOrPermanent(delivery.id, leaseId, delivery.attempts + 1, null, 'Push adapter failed', delayMs)
+      }
 
       if (result.outcome === 'sent' && (result.status === 404 || result.status === 410)) {
         await options.repository.deleteSubscription(delivery.userId, delivery.subscriptionId)
@@ -114,12 +147,21 @@ export function createPushWorker(options: CreatePushWorkerOptions): PushWorker {
         const classification = classifyNotificationResponse(result.status)
         if (classification === 'success') {
           const deliveredAt = now().toISOString()
-          await options.repository.markDelivered(delivery.id, leaseId, deliveredAt)
-          await options.repository.touchSubscriptionSuccess(subscription.id, deliveredAt)
+          if (!await options.repository.markDelivered(delivery.id, leaseId, deliveredAt)) {
+            logger.warn('[Glocke push worker] Stale delivered settlement', { deliveryId: delivery.id, leaseId })
+            return 'delivered'
+          }
+          try {
+            await options.repository.touchSubscriptionSuccess(subscription.id, deliveredAt)
+          } catch (error) {
+            logger.error('[Glocke push worker] Subscription success timestamp failed', error)
+          }
           return 'delivered'
         }
         if (classification === 'permanent') {
-          await options.repository.markPermanent(delivery.id, leaseId, delivery.attempts + 1, result.status, `HTTP ${result.status}`)
+          if (!await options.repository.markPermanent(delivery.id, leaseId, delivery.attempts + 1, result.status, `HTTP ${result.status}`)) {
+            logger.warn('[Glocke push worker] Stale HTTP settlement', { deliveryId: delivery.id, leaseId })
+          }
           return 'permanent'
         }
         const delayMs = result.retryAfterMs !== undefined
@@ -145,7 +187,10 @@ export function createPushWorker(options: CreatePushWorkerOptions): PushWorker {
       stopped = false
       const tick = () => {
         if (stopped) return
-        inFlight = this.deliverOne().catch(() => 'idle' as const).finally(() => {
+        inFlight = this.deliverOne().catch((error) => {
+          logger.error('[Glocke push worker] Delivery failed unexpectedly', error)
+          return 'idle' as const
+        }).finally(() => {
           if (!stopped) timer = setTimeout(tick, intervalMs)
         })
       }

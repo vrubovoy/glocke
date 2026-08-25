@@ -3,6 +3,7 @@ import { Bell } from 'lucide-react'
 import { Button } from '@zudar107/schloss-ui'
 import { api, ApiError } from '../../lib/api'
 import { urlBase64ToUint8Array } from '../../lib/push/vapidKey'
+import { endpointHash, getLocalPushSubscription } from '../../lib/push/localSubscription'
 
 interface PushSubscriptionSummary {
   id: string
@@ -16,7 +17,7 @@ interface PushStatus {
   notifyBrowserPush: boolean
   vapidPublicKey: string | null
   vapidKeyId: string | null
-  subscriptions: PushSubscriptionSummary[]
+  currentSubscription: PushSubscriptionSummary | null
 }
 
 type Capability = 'unsupported' | 'insecure' | 'ok'
@@ -54,11 +55,17 @@ export function BrowserPushSettings() {
   const busyRef = useRef(false)
   const subscriptionRef = useRef<{ unsubscribe: () => Promise<unknown> } | null>(null)
   const retryRef = useRef<() => void>(() => {})
+  const mountedRef = useRef(true)
+
+  useEffect(() => () => { mountedRef.current = false }, [])
 
   const fetchStatus = useCallback(async () => {
     setStatusState('loading')
     try {
-      const data = await api.get<PushStatus>('/notifications/push/status')
+      const local = await getLocalPushSubscription()
+      const hash = local ? await endpointHash(local.endpoint) : null
+      if (!mountedRef.current) return
+      const data = await api.get<PushStatus>(`/notifications/push/status${hash ? `?endpointHash=${hash}` : ''}`)
       setStatusState(data)
     } catch {
       setStatusState('error')
@@ -70,17 +77,21 @@ export function BrowserPushSettings() {
     void fetchStatus()
   }, [capability, fetchStatus])
 
-  async function runEnableFlow(status: PushStatus) {
+  async function runEnableFlow(status: PushStatus, replaceExisting = true) {
     const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/' })
     const requested = await Notification.requestPermission()
     setPermission(requested)
     if (requested !== 'granted') return
     if (!status.vapidPublicKey) throw new Error('Browser push is not configured')
+    const existing = replaceExisting ? await registration.pushManager.getSubscription() : null
+    if (existing && !status.currentSubscription && !await existing.unsubscribe()) {
+      throw new Error('Existing browser subscription could not be replaced')
+    }
     const applicationServerKey = urlBase64ToUint8Array(status.vapidPublicKey)
     const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey })
     subscriptionRef.current = subscription
     const created = await api.put<PushSubscriptionSummary>('/notifications/push/subscriptions', subscription.toJSON())
-    setStatusState((prev) => (prev === 'loading' || prev === 'error' ? prev : { ...prev, subscriptions: [...prev.subscriptions, created] }))
+    setStatusState((prev) => (prev === 'loading' || prev === 'error' ? prev : { ...prev, currentSubscription: created }))
   }
 
   async function handleEnable() {
@@ -90,7 +101,7 @@ export function BrowserPushSettings() {
     retryRef.current = () => void handleEnable()
     setActionError(null)
     try {
-      await runEnableFlow(status)
+      await runEnableFlow(status, false)
     } catch (error) {
       setActionError(error instanceof ApiError && error.status === 409 ? 'repair-conflict' : 'enable-error')
     } finally {
@@ -104,7 +115,7 @@ export function BrowserPushSettings() {
     busyRef.current = true
     retryRef.current = () => void handleRepairConflict()
     try {
-      await subscriptionRef.current?.unsubscribe()
+      if (subscriptionRef.current && !await subscriptionRef.current.unsubscribe()) throw new Error('Subscription remains active')
       setActionError(null)
       await runEnableFlow(status)
     } catch {
@@ -117,30 +128,30 @@ export function BrowserPushSettings() {
   async function handleDisable() {
     if (busyRef.current || typeof statusState === 'string') return
     const status = statusState
-    const subscriptionId = status.subscriptions[0]?.id
+    const subscriptionId = status.currentSubscription?.id
     busyRef.current = true
     retryRef.current = () => void handleDisable()
     setActionError(null)
 
     let deleted = false
     try {
-      if (subscriptionId) {
-        await api.delete(`/notifications/push/subscriptions/${subscriptionId}`)
+      const subscription = await getLocalPushSubscription()
+      const hash = subscription ? await endpointHash(subscription.endpoint) : null
+      if (subscriptionId && hash) {
+        await api.delete(`/notifications/push/subscriptions/${subscriptionId}?endpointHash=${hash}`)
         deleted = true
       }
     } catch { /* handled by the deleted/unsubscribed check below */ }
 
     let unsubscribed = false
     try {
-      const registration = await navigator.serviceWorker.ready
-      const subscription = await registration.pushManager.getSubscription()
-      if (subscription) await subscription.unsubscribe()
-      unsubscribed = true
+      const subscription = await getLocalPushSubscription()
+      unsubscribed = !subscription || await subscription.unsubscribe()
     } catch { /* handled by the deleted/unsubscribed check below */ }
 
     busyRef.current = false
     if (deleted && unsubscribed) {
-      setStatusState((prev) => (prev === 'loading' || prev === 'error' ? prev : { ...prev, subscriptions: [] }))
+      setStatusState((prev) => (prev === 'loading' || prev === 'error' ? prev : { ...prev, currentSubscription: null }))
     } else {
       setActionError('repair-partial')
     }
@@ -191,8 +202,8 @@ export function BrowserPushSettings() {
     )
   }
 
-  if (status.subscriptions.length > 0) {
-    const subscription = status.subscriptions[0]!
+  if (status.currentSubscription) {
+    const subscription = status.currentSubscription
     return (
       <StatusRegion label="push-subscribed">
         <p>Этот браузер зарегистрирован ({subscription.providerHost}) с {new Date(subscription.createdAt).toLocaleDateString('ru-RU')}.</p>

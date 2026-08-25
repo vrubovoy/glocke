@@ -44,6 +44,8 @@ export const notifications = sqliteTable('notifications', {
 export const pushSubscriptions = sqliteTable('push_subscriptions', {
   id: text('id').primaryKey(),
   userId: text('user_id').notNull(),
+  // Null only for rows created before session-bound Browser Push.
+  sessionId: text('session_id'),
   endpoint: text('endpoint').notNull(),
   endpointHash: text('endpoint_hash').notNull(),
   p256dh: text('p256dh').notNull(),
@@ -74,8 +76,10 @@ export const pushDeliveries = sqliteTable('push_deliveries', {
   deliveredAt: integer('delivered_at', { mode: 'timestamp_ms' }),
   lastStatus: integer('last_status'),
   lastError: text('last_error'),
+  settledAt: integer('settled_at', { mode: 'timestamp_ms' }),
 }, (table) => [
   uniqueIndex('push_deliveries_event_subscription_unique').on(table.eventId, table.source, table.subscriptionId),
   index('push_deliveries_subscription_idx').on(table.subscriptionId),
   index('push_deliveries_claim_idx').on(table.state, table.leaseUntil, table.nextAttemptAt),
+  index('push_deliveries_retention_idx').on(table.state, table.settledAt),
 ])

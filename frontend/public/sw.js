@@ -49,7 +49,7 @@ function decideClickAction(clients, destinationUrl, selfOrigin) {
     isSameOrigin = false
   }
   var existing = isSameOrigin ? clients.find((client) => new URL(client.url).origin === selfOrigin) : undefined
-  return existing ? { action: 'focus', client: existing } : { action: 'open', url: destinationUrl }
+  return existing ? { action: 'focus', client: existing, url: destinationUrl } : { action: 'open', url: destinationUrl }
 }
 
 self.addEventListener('push', (event) => {
@@ -75,7 +75,8 @@ self.addEventListener('notificationclick', (event) => {
     const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
     const decision = decideClickAction(clients, destinationUrl, self.location.origin)
     if (decision.action === 'focus') {
-      await decision.client.focus()
+      const navigated = decision.client.navigate ? await decision.client.navigate(decision.url) : decision.client
+      await (navigated || decision.client).focus()
     } else {
       await self.clients.openWindow(decision.url)
     }

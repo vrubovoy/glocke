@@ -3,7 +3,7 @@ const MAX_KEY_BYTES = 256
 
 export type PushSubscriptionValidationResult =
   | { valid: true; endpoint: string; p256dh: string; auth: string; expirationTime: number | null; providerHost: string }
-  | { valid: false; reason: 'malformed-body' | 'insecure-endpoint' | 'endpoint-too-long' | 'key-too-long' | 'provider-not-allowed' }
+  | { valid: false; reason: 'malformed-body' | 'insecure-endpoint' | 'endpoint-too-long' | 'key-too-long' | 'provider-not-allowed' | 'invalid-expiration' }
 
 // Server-side adaptation of schloss-ui's useUnreadNotifications.ts
 // isNonPublicHost SSRF guard - defense in depth alongside the allowlist
@@ -49,6 +49,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 export function validatePushSubscriptionInput(
   body: unknown,
   allowedProviderHosts: readonly string[],
+  now: Date = new Date(),
 ): PushSubscriptionValidationResult {
   if (!isPlainObject(body)) return { valid: false, reason: 'malformed-body' }
   const allowedTopLevelKeys = new Set(['endpoint', 'keys', 'expirationTime'])
@@ -67,6 +68,9 @@ export function validatePushSubscriptionInput(
   if (expirationTime !== undefined && expirationTime !== null && typeof expirationTime !== 'number') {
     return { valid: false, reason: 'malformed-body' }
   }
+  if (typeof expirationTime === 'number' && (
+    !Number.isSafeInteger(expirationTime) || expirationTime <= now.getTime() || expirationTime > 8_640_000_000_000_000
+  )) return { valid: false, reason: 'invalid-expiration' }
 
   let url: URL
   try {

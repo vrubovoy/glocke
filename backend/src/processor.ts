@@ -80,7 +80,8 @@ export function createProcessor(options: CreateProcessorOptions): Processor {
             leaseUntil: null,
             deliveredAt: null,
             lastStatus: null,
-            lastError: null,
+          lastError: null,
+          settledAt: null,
           }))
         }
 

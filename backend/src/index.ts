@@ -129,6 +129,7 @@ const pushWorker = config.push.enabled && config.push.vapid
     resolveRecipient,
     adapter: createWebPushAdapter(),
     vapid: config.push.vapid,
+    vapidKeyId: vapidKeyId ?? undefined,
     createLeaseId: createId,
     leaseMs: config.push.workerLeaseMs,
     fetchTimeoutMs: config.push.fetchTimeoutMs,
@@ -156,12 +157,18 @@ if (pushWorker) {
         if (await resolveRecipient(userId)) existing.add(userId)
       }
       await pushWorker.reconcile(existing)
+      const maintenanceAt = new Date()
+      await pushRepository.deleteExpiredOrRotatedSubscriptions(maintenanceAt.toISOString(), vapidKeyId!)
+      await pushRepository.purgeTerminalDeliveries(
+        new Date(maintenanceAt.getTime() - config.push.retentionMs).toISOString(),
+      )
     } catch (error) {
       console.error('[Glocke push worker] Reconciliation failed', error)
     }
   }
   reconciliationTimer = setInterval(() => void runReconciliation(), 60 * 60_000)
   reconciliationTimer.unref()
+  void runReconciliation()
 }
 
 const port = config.port

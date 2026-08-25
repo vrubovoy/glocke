@@ -34,7 +34,7 @@ describe('decideClickAction', () => {
   it('focuses an existing same-origin client when the destination is same-origin', () => {
     const existing = client('https://glocke.example.com/notifications')
     const result = decideClickAction([existing], 'https://glocke.example.com/notifications/delivery-1', selfOrigin)
-    expect(result).toEqual({ action: 'focus', client: existing })
+    expect(result).toEqual({ action: 'focus', client: existing, url: 'https://glocke.example.com/notifications/delivery-1' })
   })
 
   it('opens a new window when the destination is same-origin but no client is open', () => {

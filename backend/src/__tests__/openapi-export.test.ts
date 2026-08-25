@@ -53,12 +53,12 @@ describe('export OpenAPI contract', () => {
     expect(notifications.items.properties).not.toHaveProperty('payloadHash')
   })
 
-  it('publishes only the seven source-bound event contracts without producer presentation fields', () => {
+  it('publishes source-bound notification and session-cleanup contracts', () => {
     const operation = openApiDocument.paths?.['/internal/v1/events']?.post as any
     const schema = operation.requestBody.content['application/json'].schema
     const variants = schema.oneOf ?? schema.anyOf
 
-    expect(variants).toHaveLength(7)
+    expect(variants).toHaveLength(8)
     const contracts = Object.fromEntries(variants.map((variant: any) => [
       variant.properties.type.enum[0],
       variant,
@@ -67,6 +67,7 @@ describe('export OpenAPI contract', () => {
       'kuvert.debt.paid_off.v1',
       'kuvert.envelope.overdrawn.v1',
       'kuvert.goal.completed.v1',
+      'schlussel.push.session_revoked.v1',
       'schlussel.security.password_changed.v1',
       'tafel.project.completed.v1',
       'tafel.task.due.v1',
@@ -101,5 +102,20 @@ describe('export OpenAPI contract', () => {
       type: 'string', format: 'date',
     })
     expect(contracts['tafel.task.due.v1'].properties.payload.properties.overdue).toMatchObject({ type: 'boolean' })
+  })
+
+  it('documents every current-browser Push operation and correlation input', () => {
+    const status = openApiDocument.paths?.['/notifications/push/status']?.get as any
+    const put = openApiDocument.paths?.['/notifications/push/subscriptions']?.put as any
+    const remove = openApiDocument.paths?.['/notifications/push/subscriptions/{id}']?.delete as any
+
+    expect(status.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'endpointHash', in: 'query' }),
+    ]))
+    expect(status.responses['200'].content['application/json'].schema.properties).toHaveProperty('currentSubscription')
+    expect(put.requestBody.content['application/json'].schema.properties).toHaveProperty('expirationTime')
+    expect(remove.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'endpointHash', in: 'query', required: true }),
+    ]))
   })
 })

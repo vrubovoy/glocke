@@ -51,20 +51,20 @@ describe('push_subscriptions / push_deliveries schema', () => {
     const subscriptionColumns = sqlite.prepare('PRAGMA table_info(push_subscriptions)').all() as Array<{ name: string; notnull: number }>
     expect(subscriptionColumns.map((column) => column.name).sort()).toEqual([
       'auth', 'created_at', 'endpoint', 'endpoint_hash', 'expiration_time', 'id',
-      'last_success_at', 'p256dh', 'provider_host', 'updated_at', 'user_id', 'vapid_key_id',
+      'last_success_at', 'p256dh', 'provider_host', 'session_id', 'updated_at', 'user_id', 'vapid_key_id',
     ].sort())
     expect(subscriptionColumns.filter((column) => column.notnull === 1).map((column) => column.name).sort()).toEqual([
       'auth', 'created_at', 'endpoint', 'endpoint_hash', 'id', 'p256dh', 'provider_host', 'updated_at', 'user_id', 'vapid_key_id',
     ].sort())
-    // expiration_time and last_success_at are the only nullable columns.
+    // Legacy rows have no session_id; browser/provider timestamps are optional.
     expect(subscriptionColumns.filter((column) => column.notnull === 0).map((column) => column.name).sort()).toEqual([
-      'expiration_time', 'last_success_at',
+      'expiration_time', 'last_success_at', 'session_id',
     ].sort())
 
     const deliveryColumns = sqlite.prepare('PRAGMA table_info(push_deliveries)').all() as Array<{ name: string; notnull: number }>
     expect(deliveryColumns.map((column) => column.name).sort()).toEqual([
       'attempts', 'delivered_at', 'destination_url', 'event_id', 'id', 'last_error', 'last_status',
-      'lease_id', 'lease_until', 'next_attempt_at', 'source', 'state', 'subscription_id', 'user_id',
+      'lease_id', 'lease_until', 'next_attempt_at', 'settled_at', 'source', 'state', 'subscription_id', 'user_id',
     ].sort())
     expect(deliveryColumns.filter((column) => column.notnull === 1).map((column) => column.name).sort()).toEqual([
       'attempts', 'destination_url', 'event_id', 'id', 'source', 'state', 'subscription_id', 'user_id',

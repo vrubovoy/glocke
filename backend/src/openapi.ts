@@ -25,12 +25,50 @@ const exportResponse = z.object({
   data: z.object({ notifications: z.array(notification) }).strict(),
 }).strict()
 const json = (schema: z.ZodType) => ({ content: { 'application/json': { schema } } })
+const endpointHash = z.string().regex(/^[0-9a-f]{64}$/).describe('SHA-256 hex digest of the current local PushSubscription endpoint')
+const pushSummary = z.object({
+  id: z.string(), providerHost: z.string(), createdAt: z.iso.datetime(), lastSuccessAt: z.iso.datetime().nullable(),
+}).strict()
+const pushStatus = z.object({
+  available: z.boolean(),
+  notifyBrowserPush: z.boolean(),
+  vapidPublicKey: z.string().nullable(),
+  vapidKeyId: z.string().nullable(),
+  currentSubscription: pushSummary.nullable(),
+}).strict()
+const pushSubscriptionInput = z.object({
+  endpoint: z.url(),
+  expirationTime: z.number().int().positive().nullable().optional(),
+  keys: z.object({ p256dh: z.string(), auth: z.string() }).strict(),
+}).strict()
 
 registry.registerPath({
   method: 'get', path: '/notifications', tags: ['notifications'], summary: 'List caller-owned notifications', security: bearer,
   description: 'Returns only notifications owned by the subject of the verified JWT, newest first. The cursor is opaque.',
   request: { query: z.object({ cursor: z.string().optional(), limit: z.coerce.number().int().min(1).max(100).optional() }) },
   responses: { 200: { description: 'Newest first', ...json(z.object({ items: z.array(notification), nextCursor: z.string().nullable() })) } },
+})
+registry.registerPath({
+  method: 'get', path: '/notifications/push/status', tags: ['push'], summary: 'Get current-browser Push status', security: bearer,
+  description: 'Correlates only the verified session and the browser-supplied SHA-256 endpoint digest. It never returns endpoints or encryption keys and never selects an arbitrary account subscription.',
+  request: { query: z.object({ endpointHash: endpointHash.optional() }) },
+  responses: { 200: { description: 'Session- and browser-scoped status', ...json(pushStatus) } },
+})
+registry.registerPath({
+  method: 'put', path: '/notifications/push/subscriptions', tags: ['push'], summary: 'Register the current browser', security: bearer,
+  description: 'Requires a session-backed access token with sid. Ownership and session identity come only from the verified token.',
+  request: { body: { content: { 'application/json': { schema: pushSubscriptionInput } } } },
+  responses: {
+    200: { description: 'Created or refreshed current-browser subscription', ...json(pushSummary) },
+    400: { description: 'Invalid subscription or expiration' },
+    409: { description: 'Legacy token, endpoint ownership conflict, or subscription limit' },
+  },
+})
+registry.registerPath({
+  method: 'delete', path: '/notifications/push/subscriptions/{id}', tags: ['push'], summary: 'Delete the current browser subscription', security: bearer,
+  description: 'Deletes only when subject, sid, subscription ID, and local endpoint hash all match.',
+  request: { params: z.object({ id: z.string() }), query: z.object({ endpointHash }) },
+  responses: { 204: { description: 'Deleted or already absent' }, 400: { description: 'Missing browser correlation' }, 404: { description: 'Not owned by this user, session, and browser' } },
 })
 registry.registerPath({
   method: 'get', path: '/notifications/unread-count', tags: ['notifications'], summary: 'Get unread count', security: bearer,
@@ -61,7 +99,7 @@ registry.registerPath({
     401: { description: 'Missing, invalid, expired, or incorrectly scoped token' },
   },
 })
-const eventEnvelopeVariants = eventRegistry.map((registered) => z.object({
+const eventEnvelopeVariants = [...eventRegistry.map((registered) => z.object({
   version: z.literal('1'),
   id: z.uuid().describe('Non-nil event UUID'),
   type: z.literal(registered.type),
@@ -69,7 +107,11 @@ const eventEnvelopeVariants = eventRegistry.map((registered) => z.object({
   occurredAt: z.iso.datetime(),
   correlationId: z.uuid().describe('Non-nil correlation UUID'),
   payload: registered.payloadSchema,
-}).strict().describe(`Exact payload contract for ${registered.type}; only source ${registered.source} may send it. Presentation (title/body/actionUrl) is never producer-supplied - Glocke renders it centrally.`)) as unknown as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]]
+}).strict().describe(`Exact payload contract for ${registered.type}; only source ${registered.source} may send it. Presentation (title/body/actionUrl) is never producer-supplied - Glocke renders it centrally.`)), z.object({
+  version: z.literal('1'), id: z.uuid(), type: z.literal('schlussel.push.session_revoked.v1'), source: z.literal('schlussel'),
+  occurredAt: z.iso.datetime(), correlationId: z.uuid(),
+  payload: z.object({ recipientId: z.string().min(1), sessionId: z.string().min(1).max(128) }).strict(),
+}).strict().describe('Durably produced Schlüssel cleanup for one exact user session.')] as unknown as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]]
 
 registry.registerPath({
   method: 'post', path: '/internal/v1/events', tags: ['internal'], summary: 'Accept a signed notification event',

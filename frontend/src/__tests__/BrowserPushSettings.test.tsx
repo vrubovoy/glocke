@@ -80,12 +80,12 @@ const noSubStatus = {
   notifyBrowserPush: true,
   vapidPublicKey: VAPID_KEY,
   vapidKeyId: 'key-1',
-  subscriptions: [] as Array<{ id: string; providerHost: string; createdAt: string; lastSuccessAt: string | null }>,
+  currentSubscription: null as { id: string; providerHost: string; createdAt: string; lastSuccessAt: string | null } | null,
 }
 
 const subscribedStatus = {
   ...noSubStatus,
-  subscriptions: [{ id: 'sub-1', providerHost: 'fcm.googleapis.com', createdAt: '2026-08-10T09:00:00.000Z', lastSuccessAt: '2026-08-17T09:00:00.000Z' }],
+  currentSubscription: { id: 'sub-1', providerHost: 'fcm.googleapis.com', createdAt: '2026-08-10T09:00:00.000Z', lastSuccessAt: '2026-08-17T09:00:00.000Z' },
 }
 
 function deferred<T>() {
@@ -445,7 +445,9 @@ describe('BrowserPushSettings', () => {
       const firstSubscription = await registration.pushManager.subscribe.mock.results[0].value
       await user.click(repairButton)
 
-      await waitFor(() => expect(firstSubscription.unsubscribe).toHaveBeenCalledOnce())
+      // Once to replace the uncorrelated local subscription, then once to
+      // repair the server ownership conflict returned for the fresh write.
+      await waitFor(() => expect(firstSubscription.unsubscribe).toHaveBeenCalledTimes(2))
       await waitFor(() => expect(registration.pushManager.subscribe).toHaveBeenCalledTimes(2))
       await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2))
       expect(await screen.findByRole('status', { name: 'push-subscribed' })).toBeInTheDocument()
@@ -464,15 +466,14 @@ describe('BrowserPushSettings', () => {
       const region = await screen.findByRole('status', { name: 'push-subscribed' })
       await user.click(within(region).getByRole('button', { name: /отключить/i }))
 
-      await waitFor(() => expect(api.delete).toHaveBeenCalledWith('/notifications/push/subscriptions/sub-1'))
+      await waitFor(() => expect(api.delete).toHaveBeenCalledWith(expect.stringMatching(/^\/notifications\/push\/subscriptions\/sub-1\?endpointHash=[0-9a-f]{64}$/)))
       const subscription = await registration.pushManager.getSubscription()
       await waitFor(() => expect(subscription.unsubscribe).toHaveBeenCalledOnce())
       expect(await screen.findByRole('status', { name: 'push-granted-no-subscription' })).toBeInTheDocument()
     })
 
     it('partial-failure branch: server DELETE succeeds but browser unsubscribe fails -> repair-required state', async () => {
-      const subscription = makeSubscription()
-      subscription.unsubscribe.mockRejectedValue(new Error('unsubscribe failed'))
+      const subscription = makeSubscription({ unsubscribeResult: false })
       const registration = makeRegistration(() => Promise.resolve(subscription))
       registration.pushManager.getSubscription.mockResolvedValue(subscription)
       stubCapableSecureBrowser({ registration, permission: 'granted' })

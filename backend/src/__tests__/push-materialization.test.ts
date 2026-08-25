@@ -192,7 +192,7 @@ describe('push materialization', () => {
 
     expect(Object.keys(repository.pushDeliveries[0]!).sort()).toEqual([
       'attempts', 'deliveredAt', 'destinationUrl', 'eventId', 'id', 'lastError', 'lastStatus',
-      'leaseId', 'leaseUntil', 'nextAttemptAt', 'source', 'state', 'subscriptionId', 'userId',
+      'leaseId', 'leaseUntil', 'nextAttemptAt', 'settledAt', 'source', 'state', 'subscriptionId', 'userId',
     ].sort())
   })
 })

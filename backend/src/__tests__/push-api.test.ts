@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
+import { signNotificationRequest } from '@zudar107/schloss-server-kit'
 import { createApp } from '../app.js'
 import { createHttpApp } from '../http.js'
 import { pushSubscriptionRecord, pushSubscriptionRequestBody, VAPID } from './helpers/push-fixtures.js'
@@ -50,6 +51,7 @@ import { MemoryNotificationRepository } from './helpers/repository.js'
 
 const USER_1_HEADERS = { Authorization: 'Bearer user-1-token' }
 const USER_2_HEADERS = { Authorization: 'Bearer user-2-token' }
+const SCHLUSSEL_SECRET = 'schlussel-test-secret-at-least-32-bytes'
 
 const PUSH_CONFIG = {
   available: true,
@@ -69,6 +71,7 @@ describe('browser push APIs', () => {
   let pushRepository: MemoryPushRepository
   let app: ReturnType<typeof createHttpApp>
   let recipients: Record<string, { notifyInApp: boolean; notifyBrowserPush: boolean }>
+  let sessions: Record<string, string | undefined>
 
   beforeEach(() => {
     notificationRepository = new MemoryNotificationRepository()
@@ -77,12 +80,14 @@ describe('browser push APIs', () => {
       'user-1': { notifyInApp: true, notifyBrowserPush: true },
       'user-2': { notifyInApp: true, notifyBrowserPush: false },
     }
+    sessions = { [USER_1_HEADERS.Authorization]: 'session-1', [USER_2_HEADERS.Authorization]: 'session-2' }
     const service = createApp({
       repository: notificationRepository,
       pushRepository,
       pushConfig: PUSH_CONFIG,
       resolveRecipient: async (userId: string) => recipients[userId] ? { userId, ...recipients[userId] } : null,
-      sourceSecrets: {},
+      sourceSecrets: { schlussel: SCHLUSSEL_SECRET },
+      getSessionId: (request) => sessions[request.headers.get('Authorization') ?? ''] ?? null,
       authenticate: async (request) => {
         const token = request.headers.get('Authorization')
         if (token === USER_1_HEADERS.Authorization) return 'user-1'
@@ -104,7 +109,8 @@ describe('browser push APIs', () => {
         id: 'sub-theirs', userId: 'user-2', endpoint: 'https://updates.push.services.mozilla.com/wpush/v2/theirs',
       }))
 
-      const response = await app.request('/notifications/push/status', { headers: USER_1_HEADERS })
+      const hash = (await pushRepository.listSubscriptions('user-1'))[0]!.endpointHash
+      const response = await app.request(`/notifications/push/status?endpointHash=${hash}`, { headers: USER_1_HEADERS })
 
       expect(response.status).toBe(200)
       const body = await response.json()
@@ -113,10 +119,10 @@ describe('browser push APIs', () => {
         notifyBrowserPush: true,
         vapidPublicKey: VAPID.publicKey,
         vapidKeyId: VAPID.keyId,
-        subscriptions: [{
+        currentSubscription: {
           id: 'sub-1', providerHost: 'fcm.googleapis.com',
           createdAt: '2026-08-01T00:00:00.000Z', lastSuccessAt: '2026-08-06T00:00:00.000Z',
-        }],
+        },
       })
     })
 
@@ -144,7 +150,19 @@ describe('browser push APIs', () => {
 
       const response = await app.request('/notifications/push/status', { headers: USER_1_HEADERS })
 
-      expect((await response.json() as { subscriptions: unknown[] }).subscriptions).toEqual([])
+      expect((await response.json() as { currentSubscription: unknown }).currentSubscription).toBeNull()
+    })
+
+    it('correlates one browser without exposing another subscription from the same account', async () => {
+      const current = pushSubscriptionRecord({ id: 'current', sessionId: 'session-1' })
+      pushRepository.seedSubscription(current)
+      pushRepository.seedSubscription(pushSubscriptionRecord({
+        id: 'other-session', sessionId: 'session-2', endpoint: 'https://fcm.googleapis.com/fcm/send/other-session',
+      }))
+
+      const response = await app.request(`/notifications/push/status?endpointHash=${current.endpointHash}`, { headers: USER_1_HEADERS })
+
+      expect((await response.json() as { currentSubscription: { id: string } | null }).currentSubscription?.id).toBe('current')
     })
 
     it('marks the response private, no-store, no-cache, and nosniff', async () => {
@@ -156,6 +174,17 @@ describe('browser push APIs', () => {
       const response = await app.request('/notifications/push/status')
       expect(response.status).toBe(401)
       expectPrivateNoCacheResponse(response)
+    })
+
+    it('rejects a legacy access token without a stable session claim', async () => {
+      delete sessions[USER_1_HEADERS.Authorization]
+      const response = await app.request('/notifications/push/subscriptions', {
+        method: 'PUT', headers: { ...USER_1_HEADERS, 'Content-Type': 'application/json' },
+        body: JSON.stringify(pushSubscriptionRequestBody()),
+      })
+
+      expect(response.status).toBe(409)
+      expect(await pushRepository.listSubscriptions('user-1')).toEqual([])
     })
   })
 
@@ -299,9 +328,10 @@ describe('browser push APIs', () => {
     it('deletes an owned subscription and is idempotent', async () => {
       pushRepository.seedSubscription(pushSubscriptionRecord({ id: 'sub-1', userId: 'user-1' }))
 
-      const first = await app.request('/notifications/push/subscriptions/sub-1', { method: 'DELETE', headers: USER_1_HEADERS })
+      const hash = (await pushRepository.listSubscriptions('user-1'))[0]!.endpointHash
+      const first = await app.request(`/notifications/push/subscriptions/sub-1?endpointHash=${hash}`, { method: 'DELETE', headers: USER_1_HEADERS })
       expect(first.status).toBe(204)
-      const second = await app.request('/notifications/push/subscriptions/sub-1', { method: 'DELETE', headers: USER_1_HEADERS })
+      const second = await app.request(`/notifications/push/subscriptions/sub-1?endpointHash=${hash}`, { method: 'DELETE', headers: USER_1_HEADERS })
       expect(second.status).toBe(204)
       expect(await pushRepository.listSubscriptions('user-1')).toEqual([])
     })
@@ -309,7 +339,8 @@ describe('browser push APIs', () => {
     it('returns 404, not 403, for another account subscription id', async () => {
       pushRepository.seedSubscription(pushSubscriptionRecord({ id: 'sub-1', userId: 'user-1' }))
 
-      const response = await app.request('/notifications/push/subscriptions/sub-1', { method: 'DELETE', headers: USER_2_HEADERS })
+      const hash = (await pushRepository.listSubscriptions('user-1'))[0]!.endpointHash
+      const response = await app.request(`/notifications/push/subscriptions/sub-1?endpointHash=${hash}`, { method: 'DELETE', headers: USER_2_HEADERS })
 
       expect(response.status).toBe(404)
       expect((await pushRepository.listSubscriptions('user-1'))[0]?.id).toBe('sub-1')
@@ -317,13 +348,44 @@ describe('browser push APIs', () => {
 
     it('marks the response private, no-store, no-cache, and nosniff', async () => {
       pushRepository.seedSubscription(pushSubscriptionRecord({ id: 'sub-1', userId: 'user-1' }))
-      const response = await app.request('/notifications/push/subscriptions/sub-1', { method: 'DELETE', headers: USER_1_HEADERS })
+      const hash = (await pushRepository.listSubscriptions('user-1'))[0]!.endpointHash
+      const response = await app.request(`/notifications/push/subscriptions/sub-1?endpointHash=${hash}`, { method: 'DELETE', headers: USER_1_HEADERS })
       expectPrivateNoCacheResponse(response)
     })
 
     it('requires authentication', async () => {
       const response = await app.request('/notifications/push/subscriptions/sub-1', { method: 'DELETE' })
       expect(response.status).toBe(401)
+    })
+  })
+
+  describe('signed session cleanup', () => {
+    it('deletes only subscriptions bound to the revoked user session', async () => {
+      pushRepository.seedSubscription(pushSubscriptionRecord({ id: 'session-1-sub', sessionId: 'session-1' }))
+      pushRepository.seedSubscription(pushSubscriptionRecord({
+        id: 'session-2-sub', sessionId: 'session-2', endpoint: 'https://fcm.googleapis.com/fcm/send/session-2',
+      }))
+      const body = JSON.stringify({
+        version: '1', id: '10000000-0000-4000-8000-000000000091',
+        type: 'schlussel.push.session_revoked.v1', source: 'schlussel',
+        occurredAt: '2026-08-07T10:00:00.000Z', correlationId: '10000000-0000-4000-8000-000000000092',
+        payload: { recipientId: 'user-1', sessionId: 'session-1' },
+      })
+      const timestamp = Math.floor(Date.parse('2026-08-07T10:00:00.000Z') / 1_000)
+      const signature = signNotificationRequest({
+        secret: SCHLUSSEL_SECRET, keyId: 'schlussel-test', source: 'schlussel', timestamp,
+        method: 'POST', path: '/internal/v1/events', rawBody: body,
+      })
+
+      const response = await app.request('/internal/v1/events', {
+        method: 'POST', body, headers: {
+          'Content-Type': 'application/json', 'X-Hof-Service': 'schlussel', 'X-Hof-Key-Id': 'schlussel-test',
+          'X-Hof-Timestamp': String(timestamp), 'X-Hof-Signature': signature,
+        },
+      })
+
+      expect(response.status).toBe(202)
+      expect(pushRepository.subscriptions.map((subscription) => subscription.id)).toEqual(['session-2-sub'])
     })
   })
 

@@ -45,6 +45,25 @@ export interface CreateAppOptions {
   resolveRecipient?: ResolveRecipient
   pushConfig?: PushApiConfig
   createPushSubscriptionId?: () => string
+  getSessionId?: (request: Request) => string | null
+}
+
+const endpointHashSchema = z.string().regex(/^[0-9a-f]{64}$/)
+const pushCleanupPayloadSchema = z.object({ recipientId: z.string().min(1), sessionId: z.string().min(1).max(128) }).strict()
+
+function accessTokenSessionId(request: Request): string | null {
+  const token = request.headers.get('Authorization')?.replace(/^Bearer /, '')
+  if (!token) return null
+  try {
+    const encoded = token.split('.')[1]
+    if (!encoded) return null
+    const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString()) as Record<string, unknown>
+    return typeof payload['sid'] === 'string' && payload['sid'].length > 0 && payload['sid'].length <= 128
+      ? payload['sid']
+      : null
+  } catch {
+    return null
+  }
 }
 
 function credentials(options: CreateAppOptions): Readonly<Record<string, ProducerCredential>> {
@@ -146,6 +165,13 @@ export function createApp(options: CreateAppOptions): Hono<ExportAuthEnv> {
       return context.json({ error: 'Invalid event envelope' }, 400)
     }
 
+    if (parsed.data.source === 'schlussel' && parsed.data.type === 'schlussel.push.session_revoked.v1') {
+      const cleanup = pushCleanupPayloadSchema.safeParse(parsed.data.payload)
+      if (!cleanup.success || !options.pushRepository) return context.json({ error: 'Invalid push cleanup' }, 400)
+      await options.pushRepository.deleteSubscriptionsForSession(cleanup.data.recipientId, cleanup.data.sessionId)
+      return context.json({ status: 'accepted' }, 202)
+    }
+
     // Registry is the sole authority on which (source, type) pairs exist
     // and what shape their payload takes - a source claiming a type it
     // doesn't own, or a type this deployment never registered, is
@@ -227,18 +253,27 @@ export function createApp(options: CreateAppOptions): Hono<ExportAuthEnv> {
     const userId = context.get('user').id
     const pushConfig = options.pushConfig
     const recipient = await options.resolveRecipient?.(userId)
+    const sessionId = options.getSessionId
+      ? options.getSessionId(context.req.raw)
+      : options.authenticate ? 'test-session' : accessTokenSessionId(context.req.raw)
+    const parsedHash = endpointHashSchema.safeParse(context.req.query('endpointHash'))
     const subscriptions = await options.pushRepository?.listSubscriptions(userId) ?? []
+    const currentSubscription = parsedHash.success && sessionId
+      ? subscriptions.find((subscription) => (
+          subscription.sessionId === sessionId && subscription.endpointHash === parsedHash.data
+        )) ?? null
+      : null
     return context.json({
       available: pushConfig?.available ?? false,
       notifyBrowserPush: recipient?.notifyBrowserPush ?? false,
       vapidPublicKey: pushConfig?.vapidPublicKey ?? null,
       vapidKeyId: pushConfig?.vapidKeyId ?? null,
-      subscriptions: subscriptions.map((subscription) => ({
-        id: subscription.id,
-        providerHost: subscription.providerHost,
-        createdAt: subscription.createdAt,
-        lastSuccessAt: subscription.lastSuccessAt,
-      })),
+      currentSubscription: currentSubscription ? {
+        id: currentSubscription.id,
+        providerHost: currentSubscription.providerHost,
+        createdAt: currentSubscription.createdAt,
+        lastSuccessAt: currentSubscription.lastSuccessAt,
+      } : null,
     })
   })
 
@@ -258,14 +293,19 @@ export function createApp(options: CreateAppOptions): Hono<ExportAuthEnv> {
     const candidate = rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody)
       ? Object.fromEntries(Object.entries(rawBody).filter(([key]) => key !== 'userId' && key !== 'id'))
       : rawBody
-    const validated = validatePushSubscriptionInput(candidate, pushConfig.allowedProviderHosts)
+    const validated = validatePushSubscriptionInput(candidate, pushConfig.allowedProviderHosts, now())
     if (!validated.valid) return context.json({ error: `Invalid push subscription: ${validated.reason}` }, 400)
 
     const userId = context.get('user').id
+    const sessionId = options.getSessionId
+      ? options.getSessionId(context.req.raw)
+      : options.authenticate ? 'test-session' : accessTokenSessionId(context.req.raw)
+    if (!sessionId) return context.json({ error: 'A session-bound access token is required' }, 409)
     const at = now().toISOString()
     const result = await options.pushRepository.putSubscription({
       id: createPushSubscriptionId(),
       userId,
+      sessionId,
       endpoint: validated.endpoint,
       endpointHash: createHash('sha256').update(validated.endpoint).digest('hex'),
       p256dh: validated.p256dh,
@@ -302,10 +342,17 @@ export function createApp(options: CreateAppOptions): Hono<ExportAuthEnv> {
   app.delete('/notifications/push/subscriptions/:id', async (context) => {
     if (!options.pushRepository) return context.json({ error: 'Browser push is not available' }, 503)
     const userId = context.get('user').id
+    const sessionId = options.getSessionId
+      ? options.getSessionId(context.req.raw)
+      : options.authenticate ? 'test-session' : accessTokenSessionId(context.req.raw)
+    const endpointHash = endpointHashSchema.safeParse(context.req.query('endpointHash'))
+    if (!sessionId || !endpointHash.success) return context.json({ error: 'Current browser correlation is required' }, 400)
     const id = context.req.param('id')
     const subscription = await options.pushRepository.findSubscriptionById(id)
-    if (subscription && subscription.userId !== userId) return context.json({ error: 'Not found' }, 404)
-    if (subscription) await options.pushRepository.deleteSubscription(userId, id)
+    if (subscription && (
+      subscription.userId !== userId || subscription.sessionId !== sessionId || subscription.endpointHash !== endpointHash.data
+    )) return context.json({ error: 'Not found' }, 404)
+    if (subscription) await options.pushRepository.deleteBoundSubscription(userId, sessionId, id, endpointHash.data)
     return context.body(null, 204)
   })
 

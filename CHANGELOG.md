@@ -4,6 +4,13 @@
 
 ### Added
 
+- Hardened Browser Push with endpoint-hash/current-session correlation,
+  durable signed session cleanup, explicit legacy-row migration behavior,
+  expiration and VAPID rotation cleanup, strict expiration validation,
+  VAPID pair startup checks, HTTP-date `Retry-After`, stale lease/error
+  logging, settled-delivery retention, local logout cleanup, navigate-then-
+  focus notification clicks, and complete Push OpenAPI coverage.
+
 - Browser Push delivery: `push_subscriptions`/`push_deliveries` tables,
   materialization gated independently per channel alongside the existing
   in-app notification write, a leased retry worker around `web-push` with
@@ -46,5 +53,4 @@
 
 ### Planned
 
-- Add Browser Push with a Glocke-owned service worker and VAPID configuration.
 - Add the Telegram bot and secure account-linking flow.
