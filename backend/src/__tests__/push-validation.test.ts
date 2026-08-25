@@ -51,6 +51,15 @@ describe('push subscription input validation', () => {
       .toMatchObject({ valid: true, expirationTime: null })
   })
 
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, 1.5, -1, 1_700_000_000_000])(
+    'rejects an invalid or expired expirationTime: %s',
+    (expirationTime) => {
+      expect(validatePushSubscriptionInput(
+        validBody({ expirationTime }), ALLOWLIST, new Date('2026-08-07T10:00:00.000Z'),
+      )).toMatchObject({ valid: false, reason: 'invalid-expiration' })
+    },
+  )
+
   it.each([
     ['Mozilla', 'https://updates.push.services.mozilla.com/wpush/v2/xyz', 'updates.push.services.mozilla.com'],
     ['Apple', 'https://web.push.apple.com/QA1b2C3', 'web.push.apple.com'],

@@ -223,6 +223,7 @@ The Settings page downloads the current user's Glocke snapshot directly as
 | `GLOCKE_PUSH_WORKER_INTERVAL_MS` | Push worker polling interval; default 1s |
 | `GLOCKE_PUSH_MAX_ATTEMPTS` / `GLOCKE_PUSH_RETRY_BASE_DELAY_MS` / `GLOCKE_PUSH_RETRY_MAX_DELAY_MS` | Retry attempt cap and full-jitter backoff bounds; defaults 8 / 1s / 6h |
 | `GLOCKE_PUSH_MAX_SUBSCRIPTIONS_PER_USER` | Active browser cap per account; default 10 |
+| `GLOCKE_PUSH_DELIVERY_RETENTION_MS` | Retention for settled Push delivery rows; default 30 days |
 
 Every producer secret must be unique and must also differ from `GLOCKE_TO_SCHLUSSEL_HMAC_SECRET`. `GLOCKE_RECIPIENT_FETCH_TIMEOUT_MS` bounds each preference lookup; `GLOCKE_WORKER_LEASE_MS` must provide at least 10 seconds beyond that timeout for rendering and SQLite contention. Defaults are 5 seconds and 30 seconds respectively.
 
@@ -330,16 +331,29 @@ network-free adapter, re-checks the recipient's global preference at send
 time (not just at enqueue time), deletes a subscription and settles its
 related deliveries on 404/410, retries other retryable outcomes with
 full-jitter backoff capped by `GLOCKE_PUSH_RETRY_MAX_DELAY_MS`, and honors
-(but caps) `Retry-After`. A periodic reconciliation sweep removes
-subscriptions for accounts Schlüssel no longer recognizes.
+(but caps) delta-seconds and HTTP-date `Retry-After` values. Every claimed row
+is fenced on settlement; stale writes and unexpected worker failures are
+logged. Startup rejects mismatched VAPID pairs. Initial and periodic
+maintenance removes expired subscriptions, subscriptions tagged with an old
+VAPID key, orphaned accounts, and terminal deliveries past retention.
 
 `GET/PUT/DELETE /notifications/push/*` enforce owner isolation, a
 provider-host allowlist with SSRF/private-range rejection, and a per-user
 subscription cap; responses never include a raw endpoint, encryption keys,
-or the VAPID private key. The service worker (`frontend/public/sw.js`) has
+or the VAPID private key. New rows require Schlüssel's stable `sid` claim and
+store it with the endpoint hash. Status and deletion match the verified user,
+session, and current local Push endpoint instead of selecting an arbitrary
+account subscription. Migrated legacy rows retain `session_id = NULL` and are
+never attributed to a current session; registering that exact local endpoint
+claims it for the verified session. Signed Schlüssel cleanup removes only the
+revoked session. `/push-cleanup` is an unauthenticated Glocke-origin page for
+best-effort local unsubscribe, while durable server cleanup keeps logout
+independent of browser or Glocke availability.
+
+The service worker (`frontend/public/sw.js`) has
 no fetch handler and never receives a JWT; a push shows only neutral text
-and a trusted destination URL, and a click focuses an existing Glocke tab
-before opening a new one.
+and a trusted destination URL. A click navigates an existing same-origin
+Glocke tab to that destination before focusing it, or opens a new window.
 
 Disabled by default (`GLOCKE_BROWSER_PUSH_ENABLED=false`) and requires no
 VAPID configuration until enabled - see the environment variable table

@@ -1,3 +1,4 @@
+import { createECDH, timingSafeEqual } from 'node:crypto'
 import type { ProducerCredential } from './app.js'
 import { registeredEventSources } from './event-registry.js'
 
@@ -37,6 +38,7 @@ export interface PushConfig {
   baseDelayMs: number
   maxDelayMs: number
   maxSubscriptionsPerUser: number
+  retentionMs: number
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -125,12 +127,25 @@ function loadPushConfig(env: NodeJS.ProcessEnv): PushConfig {
     baseDelayMs: integer(env, 'GLOCKE_PUSH_RETRY_BASE_DELAY_MS', 1_000, 1, 3_600_000),
     maxDelayMs: integer(env, 'GLOCKE_PUSH_RETRY_MAX_DELAY_MS', 6 * 60 * 60_000, 1_000, 24 * 60 * 60_000),
     maxSubscriptionsPerUser: integer(env, 'GLOCKE_PUSH_MAX_SUBSCRIPTIONS_PER_USER', 10, 1, 100),
+    retentionMs: integer(env, 'GLOCKE_PUSH_DELIVERY_RETENTION_MS', 30 * 24 * 60 * 60_000, 60_000, 365 * 24 * 60 * 60_000),
   }
   if (!enabled) return { enabled: false, vapid: null, allowedProviderHosts: [], ...shared }
 
   const subject = vapidSubject(required(env, 'GLOCKE_VAPID_SUBJECT'), 'GLOCKE_VAPID_SUBJECT')
   const publicKey = required(env, 'GLOCKE_VAPID_PUBLIC_KEY')
   const privateKey = required(env, 'GLOCKE_VAPID_PRIVATE_KEY')
+  let derivedPublicKey: Buffer
+  try {
+    const ecdh = createECDH('prime256v1')
+    ecdh.setPrivateKey(Buffer.from(privateKey, 'base64url'))
+    derivedPublicKey = ecdh.getPublicKey()
+  } catch {
+    throw new Error('GLOCKE_VAPID_PRIVATE_KEY must be valid P-256 key material')
+  }
+  const configuredPublicKey = Buffer.from(publicKey, 'base64url')
+  if (configuredPublicKey.length !== derivedPublicKey.length || !timingSafeEqual(configuredPublicKey, derivedPublicKey)) {
+    throw new Error('GLOCKE_VAPID_PUBLIC_KEY and GLOCKE_VAPID_PRIVATE_KEY must be a matching pair')
+  }
   const allowedProviderHosts = required(env, 'GLOCKE_PUSH_ALLOWED_ENDPOINT_HOSTS').split(',').map((value) => value.trim()).filter(Boolean)
   if (allowedProviderHosts.length === 0) throw new Error('GLOCKE_PUSH_ALLOWED_ENDPOINT_HOSTS must list at least one provider host')
 

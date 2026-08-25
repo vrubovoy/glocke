@@ -31,6 +31,7 @@ function deliveryRow(record: PushDeliveryRecord) {
     nextAttemptAt: record.nextAttemptAt ? new Date(record.nextAttemptAt) : null,
     leaseUntil: record.leaseUntil ? new Date(record.leaseUntil) : null,
     deliveredAt: record.deliveredAt ? new Date(record.deliveredAt) : null,
+    settledAt: record.settledAt ? new Date(record.settledAt) : null,
   }
 }
 
@@ -191,5 +192,19 @@ describe('SqlitePushRepository', () => {
     await repository.touchSubscriptionSuccess('sub-1', '2026-08-07T12:00:00.000Z')
 
     expect((await repository.listSubscriptions('user-1'))[0]?.lastSuccessAt).toBe('2026-08-07T12:00:00.000Z')
+  })
+
+  it('purges only terminal deliveries older than the retention cutoff', async () => {
+    await repository.putSubscription(pushSubscriptionRecord({ id: 'sub-1', userId: 'user-1' }), 10)
+    database.insert(schema.pushDeliveries).values([
+      deliveryRow(pushDeliveryRecord({ id: 'old', state: 'permanent', settledAt: '2026-07-01T00:00:00.000Z' })),
+      deliveryRow(pushDeliveryRecord({ id: 'new', eventId: 'event-new', state: 'delivered', settledAt: '2026-08-07T00:00:00.000Z' })),
+      deliveryRow(pushDeliveryRecord({ id: 'pending', eventId: 'event-pending', settledAt: '2026-07-01T00:00:00.000Z' })),
+    ]).run()
+
+    expect(await repository.purgeTerminalDeliveries('2026-08-01T00:00:00.000Z')).toBe(1)
+    expect(database.select({ id: schema.pushDeliveries.id }).from(schema.pushDeliveries).all()).toEqual([
+      { id: 'new' }, { id: 'pending' },
+    ])
   })
 })

@@ -7,6 +7,7 @@ import { SettingsPage } from '../features/settings/SettingsPage'
 import { HelpPage } from '../features/help/HelpPage'
 import { DocsPage } from '../features/docs/DocsPage'
 import { AuthCallbackPage } from '../features/auth/AuthCallbackPage'
+import { PushCleanupPage } from '../features/settings/PushCleanupPage'
 import { getAccessToken } from '../lib/api'
 import { buildSchluesselLoginUrl } from '../lib/authRedirect'
 import { queryClient } from '../lib/queryClient'
@@ -16,6 +17,7 @@ const root = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   notFoundComponent: () => <NotFoundPage homeHref="/" />,
 })
 const callback = createRoute({ getParentRoute: () => root, path: '/auth/callback', component: AuthCallbackPage })
+const pushCleanup = createRoute({ getParentRoute: () => root, path: '/push-cleanup', component: PushCleanupPage })
 const protectedRoute = createRoute({
   getParentRoute: () => root,
   id: 'protected',
@@ -29,7 +31,7 @@ const notifications = createRoute({ getParentRoute: () => protectedRoute, path: 
 const settings = createRoute({ getParentRoute: () => protectedRoute, path: '/settings', component: SettingsPage })
 const help = createRoute({ getParentRoute: () => protectedRoute, path: '/help', component: HelpPage })
 const docs = createRoute({ getParentRoute: () => protectedRoute, path: '/docs', component: DocsPage })
-const routeTree = root.addChildren([callback, protectedRoute.addChildren([index, notifications, settings, help, docs])])
+const routeTree = root.addChildren([callback, pushCleanup, protectedRoute.addChildren([index, notifications, settings, help, docs])])
 export const router = createRouter({ routeTree, context: { queryClient } })
 
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }

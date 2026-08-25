@@ -21,6 +21,7 @@ export type PushDeliveryState = 'pending' | 'processing' | 'delivered' | 'suppre
 export interface PushSubscriptionRecord {
   id: string
   userId: string
+  sessionId: string | null
   endpoint: string
   endpointHash: string
   p256dh: string
@@ -48,6 +49,7 @@ export interface PushDeliveryRecord {
   deliveredAt: string | null
   lastStatus: number | null
   lastError: string | null
+  settledAt: string | null
 }
 
 // Test-only VAPID material - never real key bytes, but shaped plausibly.
@@ -72,6 +74,7 @@ export function pushSubscriptionRecord(overrides: Partial<PushSubscriptionRecord
   return {
     id: 'subscription-1',
     userId: 'user-1',
+    sessionId: 'session-1',
     endpoint,
     endpointHash: endpointHash(endpoint),
     p256dh: P256DH,
@@ -102,6 +105,7 @@ export function pushDeliveryRecord(overrides: Partial<PushDeliveryRecord> = {}):
     deliveredAt: null,
     lastStatus: null,
     lastError: null,
+    settledAt: null,
     ...overrides,
   }
 }

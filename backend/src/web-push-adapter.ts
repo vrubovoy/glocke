@@ -1,4 +1,5 @@
 import webPush from 'web-push'
+import { parseRetryAfter } from '@zudar107/schloss-server-kit'
 import type { PushAdapter, PushAdapterSendArgs, PushAdapterSendResult } from './push-worker.js'
 
 // The only seam that ever touches the network for browser push - wraps
@@ -18,11 +19,11 @@ export function createWebPushAdapter(): PushAdapter {
             timeout: timeoutMs,
           },
         )
-        const retryAfterMs = parseRetryAfterSeconds(response.headers['retry-after'])
+        const retryAfterMs = parseWebPushRetryAfter(response.headers['retry-after'])
         return { outcome: 'sent', status: response.statusCode, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) }
       } catch (error) {
         if (isWebPushError(error)) {
-          const retryAfterMs = parseRetryAfterSeconds(error.headers?.['retry-after'])
+          const retryAfterMs = parseWebPushRetryAfter(error.headers?.['retry-after'])
           return { outcome: 'sent', status: error.statusCode, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) }
         }
         if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
@@ -34,8 +35,8 @@ export function createWebPushAdapter(): PushAdapter {
   }
 }
 
-function parseRetryAfterSeconds(value: string | undefined): number | undefined {
-  return value && /^\d+$/.test(value) ? Number(value) * 1_000 : undefined
+export function parseWebPushRetryAfter(value: string | undefined, now: () => number = Date.now): number | undefined {
+  return parseRetryAfter(value, { now })
 }
 
 interface WebPushError extends Error {

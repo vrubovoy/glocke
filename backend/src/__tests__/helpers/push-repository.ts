@@ -48,6 +48,7 @@ export class MemoryPushRepository {
       // re-subscribe.
       Object.assign(existingByEndpoint, {
         p256dh: input.p256dh,
+        sessionId: input.sessionId,
         auth: input.auth,
         expirationTime: input.expirationTime,
         providerHost: input.providerHost,
@@ -79,6 +80,36 @@ export class MemoryPushRepository {
       }
     }
     return true
+  }
+
+  async deleteBoundSubscription(userId: string, sessionId: string, id: string, endpointHash: string): Promise<boolean> {
+    const subscription = this.subscriptions.find((candidate) => (
+      candidate.id === id && candidate.userId === userId && candidate.sessionId === sessionId && candidate.endpointHash === endpointHash
+    ))
+    return subscription ? this.deleteSubscription(userId, id) : false
+  }
+
+  async deleteSubscriptionsForSession(userId: string, sessionId: string): Promise<number> {
+    const matching = this.subscriptions.filter((candidate) => candidate.userId === userId && candidate.sessionId === sessionId)
+    for (const subscription of matching) await this.deleteSubscription(userId, subscription.id)
+    return matching.length
+  }
+
+  async deleteExpiredOrRotatedSubscriptions(now: string, vapidKeyId: string): Promise<number> {
+    const matching = this.subscriptions.filter((candidate) => (
+      (candidate.expirationTime !== null && candidate.expirationTime <= now) || candidate.vapidKeyId !== vapidKeyId
+    ))
+    for (const subscription of matching) await this.deleteSubscription(subscription.userId, subscription.id)
+    return matching.length
+  }
+
+  async purgeTerminalDeliveries(before: string): Promise<number> {
+    const retained = this.deliveries.filter((delivery) => !(
+      delivery.settledAt && delivery.settledAt <= before && ['delivered', 'suppressed', 'permanent'].includes(delivery.state)
+    ))
+    const purged = this.deliveries.length - retained.length
+    this.deliveries.splice(0, this.deliveries.length, ...retained)
+    return purged
   }
 
   async claimPendingDelivery(now: string, leaseUntil: string, leaseId: string): Promise<PushDeliveryRecord | null> {

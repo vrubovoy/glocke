@@ -8,6 +8,7 @@ import {
 import { useAuth } from '../hooks/useAuth'
 import { apiClient } from '../lib/api'
 import { buildSchluesselAccountUrl, buildSchluesselLogoutUrl } from '../lib/authRedirect'
+import { unsubscribeLocalPush } from '../lib/push/localSubscription'
 
 const schlossUrl = (import.meta.env.VITE_SCHLOSS_URL as string | undefined) ?? 'http://localhost:3000'
 const schluesselUrl = (import.meta.env.VITE_SCHLUSSEL_URL as string | undefined) ?? 'http://localhost:4001'
@@ -53,6 +54,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const navItems = user?.role === 'admin' ? [...NAV_ITEMS, DOCS_NAV_ITEM] : NAV_ITEMS
 
   async function signOut() {
+    void unsubscribeLocalPush()
     await logout()
     location.href = buildSchluesselLogoutUrl()
   }

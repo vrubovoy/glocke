@@ -1,4 +1,4 @@
-import { and, count, eq, inArray, isNull, lte, notInArray, or } from 'drizzle-orm'
+import { and, count, eq, inArray, isNotNull, isNull, lte, ne, notInArray, or } from 'drizzle-orm'
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import type * as schemaType from './db/schema.js'
 import { pushDeliveries, pushSubscriptions } from './db/schema.js'
@@ -15,6 +15,10 @@ export interface PushRepository {
   findSubscriptionByEndpoint(endpoint: string): Promise<PushSubscriptionRecord | null>
   putSubscription(input: PushSubscriptionRecord, maxSubscriptionsPerUser: number): Promise<PutSubscriptionResult>
   deleteSubscription(userId: string, id: string): Promise<boolean>
+  deleteBoundSubscription(userId: string, sessionId: string, id: string, endpointHash: string): Promise<boolean>
+  deleteSubscriptionsForSession(userId: string, sessionId: string): Promise<number>
+  deleteExpiredOrRotatedSubscriptions(now: string, vapidKeyId: string): Promise<number>
+  purgeTerminalDeliveries(before: string): Promise<number>
   claimPendingDelivery(now: string, leaseUntil: string, leaseId: string): Promise<PushDeliveryRecord | null>
   markDelivered(id: string, leaseId: string, deliveredAt: string): Promise<boolean>
   markSuppressed(id: string, leaseId: string): Promise<boolean>
@@ -34,6 +38,7 @@ function subscriptionRecord(row: typeof pushSubscriptions.$inferSelect): PushSub
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     lastSuccessAt: row.lastSuccessAt?.toISOString() ?? null,
+    sessionId: row.sessionId,
   }
 }
 
@@ -43,6 +48,7 @@ function deliveryRecord(row: typeof pushDeliveries.$inferSelect): PushDeliveryRe
     nextAttemptAt: row.nextAttemptAt?.toISOString() ?? null,
     leaseUntil: row.leaseUntil?.toISOString() ?? null,
     deliveredAt: row.deliveredAt?.toISOString() ?? null,
+    settledAt: row.settledAt?.toISOString() ?? null,
   }
 }
 
@@ -51,7 +57,7 @@ function deliveryRecord(row: typeof pushDeliveries.$inferSelect): PushDeliveryRe
 // to 'permanent' so nothing is left claimable forever. Must run inside the
 // same transaction as the subscription delete/reconciliation that calls it.
 function settleDeliveriesForSubscription(database: Database, subscriptionId: string): void {
-  database.update(pushDeliveries).set({ state: 'permanent', leaseId: null, leaseUntil: null }).where(and(
+  database.update(pushDeliveries).set({ state: 'permanent', settledAt: new Date(), leaseId: null, leaseUntil: null }).where(and(
     eq(pushDeliveries.subscriptionId, subscriptionId),
     or(eq(pushDeliveries.state, 'pending'), eq(pushDeliveries.state, 'processing')),
   )).run()
@@ -85,6 +91,7 @@ export class SqlitePushRepository implements PushRepository {
       if (existing) {
         this.database.update(pushSubscriptions).set({
           p256dh: input.p256dh,
+          sessionId: input.sessionId,
           auth: input.auth,
           expirationTime: input.expirationTime ? new Date(input.expirationTime) : null,
           providerHost: input.providerHost,
@@ -118,6 +125,51 @@ export class SqlitePushRepository implements PushRepository {
     })
   }
 
+  async deleteBoundSubscription(userId: string, sessionId: string, id: string, endpointHash: string): Promise<boolean> {
+    return this.deleteMatchingSubscriptions(and(
+      eq(pushSubscriptions.userId, userId),
+      eq(pushSubscriptions.sessionId, sessionId),
+      eq(pushSubscriptions.id, id),
+      eq(pushSubscriptions.endpointHash, endpointHash),
+    )) === 1
+  }
+
+  async deleteSubscriptionsForSession(userId: string, sessionId: string): Promise<number> {
+    return this.deleteMatchingSubscriptions(and(
+      eq(pushSubscriptions.userId, userId),
+      eq(pushSubscriptions.sessionId, sessionId),
+    ))
+  }
+
+  async deleteExpiredOrRotatedSubscriptions(now: string, vapidKeyId: string): Promise<number> {
+    return this.deleteMatchingSubscriptions(or(
+      and(isNotNull(pushSubscriptions.expirationTime), lte(pushSubscriptions.expirationTime, new Date(now))),
+      ne(pushSubscriptions.vapidKeyId, vapidKeyId),
+    ))
+  }
+
+  async purgeTerminalDeliveries(before: string): Promise<number> {
+    return this.database.delete(pushDeliveries).where(and(
+      or(
+        eq(pushDeliveries.state, 'delivered'),
+        eq(pushDeliveries.state, 'suppressed'),
+        eq(pushDeliveries.state, 'permanent'),
+      ),
+      isNotNull(pushDeliveries.settledAt),
+      lte(pushDeliveries.settledAt, new Date(before)),
+    )).run().changes
+  }
+
+  private deleteMatchingSubscriptions(where: ReturnType<typeof and>): number {
+    return this.database.transaction(() => {
+      const rows = this.database.select({ id: pushSubscriptions.id }).from(pushSubscriptions).where(where).all()
+      if (rows.length === 0) return 0
+      for (const row of rows) settleDeliveriesForSubscription(this.database, row.id)
+      this.database.delete(pushSubscriptions).where(inArray(pushSubscriptions.id, rows.map((row) => row.id))).run()
+      return rows.length
+    })
+  }
+
   async claimPendingDelivery(now: string, leaseUntil: string, leaseId: string): Promise<PushDeliveryRecord | null> {
     return this.database.transaction(() => {
       const claimable = and(
@@ -139,13 +191,13 @@ export class SqlitePushRepository implements PushRepository {
 
   async markDelivered(id: string, leaseId: string, deliveredAt: string): Promise<boolean> {
     return this.database.update(pushDeliveries).set({
-      state: 'delivered', deliveredAt: new Date(deliveredAt), leaseId: null, leaseUntil: null,
+      state: 'delivered', deliveredAt: new Date(deliveredAt), settledAt: new Date(deliveredAt), leaseId: null, leaseUntil: null,
     }).where(and(eq(pushDeliveries.id, id), eq(pushDeliveries.leaseId, leaseId))).run().changes === 1
   }
 
   async markSuppressed(id: string, leaseId: string): Promise<boolean> {
     return this.database.update(pushDeliveries).set({
-      state: 'suppressed', leaseId: null, leaseUntil: null,
+      state: 'suppressed', settledAt: new Date(), leaseId: null, leaseUntil: null,
     }).where(and(eq(pushDeliveries.id, id), eq(pushDeliveries.leaseId, leaseId))).run().changes === 1
   }
 
@@ -163,7 +215,7 @@ export class SqlitePushRepository implements PushRepository {
     id: string, leaseId: string, attempts: number, lastStatus: number | null, lastError: string,
   ): Promise<boolean> {
     return this.database.update(pushDeliveries).set({
-      state: 'permanent', attempts, lastStatus, lastError, leaseId: null, leaseUntil: null,
+      state: 'permanent', attempts, lastStatus, lastError, settledAt: new Date(), leaseId: null, leaseUntil: null,
     }).where(and(eq(pushDeliveries.id, id), eq(pushDeliveries.leaseId, leaseId))).run().changes === 1
   }
 

@@ -176,6 +176,18 @@ describe('push delivery worker', () => {
     expect(repository.subscriptions).toHaveLength(0)
   })
 
+  it.each([
+    ['expired', { expirationTime: '2026-08-07T09:59:59.000Z' }, VAPID.keyId],
+    ['rotated VAPID key', { vapidKeyId: 'old-key' }, VAPID.keyId],
+  ])('removes an %s subscription before network delivery', async (_case, overrides, vapidKeyId) => {
+    repository.seedSubscription(pushSubscriptionRecord({ id: 'sub-1', userId: 'user-1', ...overrides }))
+    repository.seedDelivery(pushDeliveryRecord({ id: 'delivery-1', subscriptionId: 'sub-1', userId: 'user-1' }))
+
+    expect(await worker({ vapidKeyId }).deliverOne()).toBe('permanent')
+    expect(adapter.send).not.toHaveBeenCalled()
+    expect(repository.subscriptions).toHaveLength(0)
+  })
+
   it.each([400, 401, 403, 413])('treats any other 4xx (%i) as a permanent failure without retrying, leaving the subscription intact', async (status) => {
     repository.seedSubscription(pushSubscriptionRecord({ id: 'sub-1', userId: 'user-1' }))
     repository.seedDelivery(pushDeliveryRecord({ id: 'delivery-1', subscriptionId: 'sub-1', userId: 'user-1' }))
@@ -292,6 +304,21 @@ describe('push delivery worker', () => {
       await worker({ createLeaseId: () => 'this-calls-own-lease' }).deliverOne()
 
       expect(markDeliveredSpy).toHaveBeenCalledWith('delivery-1', 'this-calls-own-lease', NOW)
+    })
+
+    it('logs a stale settlement instead of silently reporting success', async () => {
+      repository.seedSubscription(pushSubscriptionRecord({ id: 'sub-1', userId: 'user-1' }))
+      repository.seedDelivery(pushDeliveryRecord({ id: 'delivery-1', subscriptionId: 'sub-1', userId: 'user-1' }))
+      adapter.send.mockResolvedValue({ outcome: 'sent', status: 200 })
+      vi.spyOn(repository, 'markDelivered').mockResolvedValue(false)
+      const logger = { error: vi.fn(), warn: vi.fn() }
+
+      await worker({ logger }).deliverOne()
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        '[Glocke push worker] Stale delivered settlement',
+        { deliveryId: 'delivery-1', leaseId: 'push-lease-1' },
+      )
     })
 
     it('does not reclaim a pending delivery before its scheduled retry time', async () => {

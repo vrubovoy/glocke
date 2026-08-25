@@ -53,6 +53,7 @@ export type PushDeliveryState = 'pending' | 'processing' | 'delivered' | 'suppre
 export interface PushSubscriptionRecord {
   id: string
   userId: string
+  sessionId: string | null
   endpoint: string
   endpointHash: string
   p256dh: string
@@ -80,6 +81,7 @@ export interface PushDeliveryRecord {
   deliveredAt: string | null
   lastStatus: number | null
   lastError: string | null
+  settledAt: string | null
 }
 
 export interface NotificationRepository {

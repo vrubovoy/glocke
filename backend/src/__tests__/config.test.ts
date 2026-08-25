@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { createCorsMiddleware } from '@zudar107/schloss-server-kit'
 import { Hono } from 'hono'
+import webPush from 'web-push'
 import { loadConfig } from '../config.js'
 
 const LOCAL_FRONTEND_ORIGINS = [
@@ -14,6 +15,7 @@ const LOCAL_FRONTEND_ORIGINS = [
   'https://schrank.localhost',
   'https://herold.localhost',
 ]
+const TEST_VAPID = webPush.generateVAPIDKeys()
 
 function validEnv(): NodeJS.ProcessEnv {
   return {
@@ -216,8 +218,8 @@ describe('browser push configuration', () => {
       ...validEnv(),
       GLOCKE_BROWSER_PUSH_ENABLED: 'true',
       GLOCKE_VAPID_SUBJECT: 'mailto:push@glocke.example.test',
-      GLOCKE_VAPID_PUBLIC_KEY: 'BNbxGYNMhAxq_test_public_key_placeholder_not_a_real_key_material',
-      GLOCKE_VAPID_PRIVATE_KEY: 'test-only-vapid-private-key-must-never-appear-in-any-response',
+      GLOCKE_VAPID_PUBLIC_KEY: TEST_VAPID.publicKey,
+      GLOCKE_VAPID_PRIVATE_KEY: TEST_VAPID.privateKey,
       GLOCKE_PUSH_ALLOWED_ENDPOINT_HOSTS: 'fcm.googleapis.com,updates.push.services.mozilla.com,web.push.apple.com,.notify.windows.com',
     }
   }
@@ -233,8 +235,8 @@ describe('browser push configuration', () => {
       enabled: true,
       vapid: {
         subject: 'mailto:push@glocke.example.test',
-        publicKey: 'BNbxGYNMhAxq_test_public_key_placeholder_not_a_real_key_material',
-        privateKey: 'test-only-vapid-private-key-must-never-appear-in-any-response',
+        publicKey: TEST_VAPID.publicKey,
+        privateKey: TEST_VAPID.privateKey,
       },
     })
     expect(config.push.allowedProviderHosts).toEqual([
@@ -255,6 +257,11 @@ describe('browser push configuration', () => {
 
   it('rejects an empty allowlist even when otherwise enabled', () => {
     expect(() => loadConfig({ ...pushEnabledEnv(), GLOCKE_PUSH_ALLOWED_ENDPOINT_HOSTS: '' })).toThrow()
+  })
+
+  it('rejects a mismatched VAPID key pair', () => {
+    const other = webPush.generateVAPIDKeys()
+    expect(() => loadConfig({ ...pushEnabledEnv(), GLOCKE_VAPID_PRIVATE_KEY: other.privateKey })).toThrow(/matching pair/)
   })
 
   it('requires the push fetch timeout to stay strictly below the push worker lease, mirroring the existing recipient-fetch/worker-lease relationship', () => {

@@ -229,6 +229,7 @@ export class SqliteNotificationRepository implements NotificationRepository {
           nextAttemptAt: delivery.nextAttemptAt ? new Date(delivery.nextAttemptAt) : null,
           leaseUntil: delivery.leaseUntil ? new Date(delivery.leaseUntil) : null,
           deliveredAt: delivery.deliveredAt ? new Date(delivery.deliveredAt) : null,
+          settledAt: delivery.settledAt ? new Date(delivery.settledAt) : null,
         }).onConflictDoNothing().run()
       }
 
