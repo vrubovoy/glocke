@@ -12,6 +12,10 @@ registry.registerComponent('securitySchemes', 'hofHmac', {
   type: 'apiKey', in: 'header', name: 'X-Hof-Signature',
   description: '64-character hexadecimal HMAC-SHA-256 over timestamp, uppercase method, path with query, SHA-256 of the exact body bytes, key id, and source (newline-delimited). The shared signer emits lowercase; verification is case-insensitive. Also requires X-Hof-Service, X-Hof-Key-Id, and X-Hof-Timestamp.',
 })
+registry.registerComponent('securitySchemes', 'deletionAuth', {
+  type: 'http', scheme: 'bearer', bearerFormat: 'JWT',
+  description: 'Short-lived Schlüssel deletion token with exact hof-deletion:glocke audience and account:delete scope.',
+})
 
 const bearer = [{ bearerAuth: [] }]
 const notification = z.object({
@@ -127,6 +131,12 @@ registry.registerPath({
     409: { description: 'The source and event id already exist with different exact body bytes' },
     413: { description: 'Request body exceeds the configured event limit' },
   },
+})
+
+registry.registerPath({
+  method: 'post', path: '/internal/v1/account-deletions', tags: ['Internal'], summary: 'Idempotently purge a deleted account',
+  security: [{ deletionAuth: [] }], request: { body: { content: { 'application/json': { schema: z.object({ jobId: z.string(), userId: z.string() }).strict() } } } },
+  responses: { 200: { description: 'Deletion completed or exact replay accepted' }, 401: { description: 'Invalid deletion token' }, 409: { description: 'Deletion identity conflict' } },
 })
 
 export const openApiDocument = new OpenApiGeneratorV3(registry.definitions).generateDocument({

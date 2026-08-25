@@ -46,6 +46,7 @@ export interface CreateAppOptions {
   pushConfig?: PushApiConfig
   createPushSubscriptionId?: () => string
   getSessionId?: (request: Request) => string | null
+  isTombstoned?: (userId: string) => Promise<boolean>
 }
 
 const endpointHashSchema = z.string().regex(/^[0-9a-f]{64}$/)
@@ -184,6 +185,10 @@ export function createApp(options: CreateAppOptions): Hono<ExportAuthEnv> {
     const payload = registered.payloadSchema.safeParse(parsed.data.payload)
     if (!payload.success) {
       return context.json({ error: 'Invalid event envelope' }, 400)
+    }
+    const recipientId = (payload.data as { recipientId: string }).recipientId
+    if (await options.isTombstoned?.(recipientId)) {
+      return context.json({ status: 'suppressed' })
     }
 
     const envelope = { ...parsed.data, payload: payload.data } as EventEnvelope

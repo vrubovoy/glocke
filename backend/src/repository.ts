@@ -1,7 +1,7 @@
 import { and, asc, count, desc, eq, gt, isNull, lt, lte, or } from 'drizzle-orm'
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import type * as schemaType from './db/schema.js'
-import { inboxEvents, notifications, pushDeliveries, pushSubscriptions } from './db/schema.js'
+import { inboxEvents, notifications, pushDeliveries, pushSubscriptions, userTombstones } from './db/schema.js'
 import type {
   EventEnvelope, InboxRecord, NotificationPage, NotificationRecord, NotificationRepository,
   PushDeliveryRecord, PushSubscriptionRecord,
@@ -68,20 +68,25 @@ export class SqliteNotificationRepository implements NotificationRepository {
   constructor(private readonly database: Database) {}
 
   async acceptInbox(record: InboxRecord): Promise<'accepted' | 'duplicate' | 'conflict'> {
-    const inserted = this.database.insert(inboxEvents).values({
-      source: record.source,
-      eventId: record.eventId,
-      userId: record.userId,
-      payloadHash: record.payloadHash,
-      envelope: JSON.stringify(record.envelope),
-      status: record.status,
-      acceptedAt: new Date(record.acceptedAt),
-    }).onConflictDoNothing().run()
-    if (inserted.changes === 1) return 'accepted'
-    const existing = this.database.select({ payloadHash: inboxEvents.payloadHash }).from(inboxEvents).where(and(
-      eq(inboxEvents.source, record.source), eq(inboxEvents.eventId, record.eventId),
-    )).get()
-    return existing?.payloadHash === record.payloadHash ? 'duplicate' : 'conflict'
+    return this.database.transaction(() => {
+      const tombstone = this.database.select({ userId: userTombstones.userId }).from(userTombstones)
+        .where(eq(userTombstones.userId, record.userId)).get()
+      if (tombstone) return 'accepted' as const
+      const inserted = this.database.insert(inboxEvents).values({
+        source: record.source,
+        eventId: record.eventId,
+        userId: record.userId,
+        payloadHash: record.payloadHash,
+        envelope: JSON.stringify(record.envelope),
+        status: record.status,
+        acceptedAt: new Date(record.acceptedAt),
+      }).onConflictDoNothing().run()
+      if (inserted.changes === 1) return 'accepted' as const
+      const existing = this.database.select({ payloadHash: inboxEvents.payloadHash }).from(inboxEvents).where(and(
+        eq(inboxEvents.source, record.source), eq(inboxEvents.eventId, record.eventId),
+      )).get()
+      return existing?.payloadHash === record.payloadHash ? 'duplicate' as const : 'conflict' as const
+    })
   }
 
   async claimPendingInbox(now: string, leaseUntil: string, leaseId: string): Promise<InboxRecord | null> {
@@ -119,12 +124,20 @@ export class SqliteNotificationRepository implements NotificationRepository {
 
   async createNotification(record: NotificationRecord, leaseId: string, now: string): Promise<'created' | 'duplicate' | 'stale'> {
     return this.database.transaction(() => {
-      const claim = this.database.select({ leaseId: inboxEvents.leaseId }).from(inboxEvents).where(and(
+      const claim = this.database.select({ leaseId: inboxEvents.leaseId, userId: inboxEvents.userId }).from(inboxEvents).where(and(
         eq(inboxEvents.source, record.source), eq(inboxEvents.eventId, record.eventId),
         eq(inboxEvents.status, 'processing'), eq(inboxEvents.leaseId, leaseId),
         gt(inboxEvents.leaseUntil, new Date(now)),
       )).get()
       if (!claim) return 'stale' as const
+      const tombstone = this.database.select({ userId: userTombstones.userId }).from(userTombstones)
+        .where(eq(userTombstones.userId, claim.userId)).get()
+      if (tombstone) {
+        this.database.delete(inboxEvents).where(and(
+          eq(inboxEvents.source, record.source), eq(inboxEvents.eventId, record.eventId),
+        )).run()
+        return 'duplicate' as const
+      }
       const result = this.database.insert(notifications).values({
         ...record,
         createdAt: new Date(record.createdAt),
@@ -207,12 +220,20 @@ export class SqliteNotificationRepository implements NotificationRepository {
     pushDeliveries: PushDeliveryRecord[]
   }): Promise<'materialized' | 'stale'> {
     return this.database.transaction(() => {
-      const claim = this.database.select({ leaseId: inboxEvents.leaseId }).from(inboxEvents).where(and(
+      const claim = this.database.select({ leaseId: inboxEvents.leaseId, userId: inboxEvents.userId }).from(inboxEvents).where(and(
         eq(inboxEvents.source, input.source), eq(inboxEvents.eventId, input.eventId),
         eq(inboxEvents.status, 'processing'), eq(inboxEvents.leaseId, input.leaseId),
         gt(inboxEvents.leaseUntil, new Date(input.now)),
       )).get()
       if (!claim) return 'stale' as const
+      const tombstone = this.database.select({ userId: userTombstones.userId }).from(userTombstones)
+        .where(eq(userTombstones.userId, claim.userId)).get()
+      if (tombstone) {
+        this.database.delete(inboxEvents).where(and(
+          eq(inboxEvents.source, input.source), eq(inboxEvents.eventId, input.eventId),
+        )).run()
+        return 'materialized' as const
+      }
 
       if (input.notification) {
         const record = input.notification

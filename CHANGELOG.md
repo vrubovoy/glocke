@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added the durable Schlussel account-deletion consumer, permanent recipient
+  tombstones, and atomic notification, subscription, and delivery purge.
 - Hardened Browser Push with endpoint-hash/current-session correlation,
   durable signed session cleanup, explicit legacy-row migration behavior,
   expiration and VAPID rotation cleanup, strict expiration validation,
