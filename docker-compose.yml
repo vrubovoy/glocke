@@ -65,9 +65,9 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
-      args:
-        VITE_SCHLUSSEL_URL: ${SCHLUSSEL_WEB_URL:-https://auth.localhost}
-        VITE_SCHLOSS_URL: ${SCHLOSS_URL:-https://localhost}
+    environment:
+      SCHLUSSEL_WEB_URL: ${SCHLUSSEL_WEB_URL:-https://auth.localhost}
+      SCHLOSS_URL: ${SCHLOSS_URL:-https://localhost}
     restart: unless-stopped
     depends_on:
       glocke-backend:

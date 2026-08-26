@@ -1,7 +1,8 @@
 import { buildAccountUrl, buildLoginUrl, buildLogoutUrl, CODE_VERIFIER_STORAGE_KEY } from '@zudar107/schloss-ui'
+import { getRuntimeConfig } from './runtimeConfig'
 
 const config = () => ({
-  schluesselUrl: (import.meta.env.VITE_SCHLUSSEL_URL as string | undefined) ?? 'http://localhost:4001',
+  schluesselUrl: getRuntimeConfig().schlusselUrl,
 })
 
 export { CODE_VERIFIER_STORAGE_KEY }

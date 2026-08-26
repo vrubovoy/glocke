@@ -194,8 +194,11 @@ pnpm dev:backend
 
 The Vite frontend defaults to `http://localhost:4001` for Schlüssel,
 `http://localhost:3000` for Schloss, and proxies `/backend` to the direct
-Glocke backend on port `3004`. Override those browser URLs with
-`VITE_SCHLUSSEL_URL` and `VITE_SCHLOSS_URL` in `frontend/.env` if needed.
+Glocke backend on port `3004`. Override those browser URLs in
+`frontend/public/config.js` for direct development. Docker Compose passes
+`SCHLUSSEL_WEB_URL` and `SCHLOSS_URL` to the container, which writes runtime
+`/config.js` at startup; changing origins does not require rebuilding the image.
+Values must be HTTP(S) origins without credentials, paths, queries, or fragments.
 The Settings page downloads the current user's Glocke snapshot directly as
 `glocke-export-YYYY-MM-DD.json` through the existing authenticated API client.
 
