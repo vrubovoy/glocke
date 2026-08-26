@@ -80,8 +80,8 @@ export interface RuntimeConfig {
 }
 
 export interface SourceOrigins {
-  kuvert: string
-  tafel: string
+  kuvert?: string
+  tafel?: string
 }
 
 export interface PushConfig {
@@ -252,9 +252,15 @@ export function loadConfig(
     schlusselSecret,
     allowedOrigins: origins,
     producers,
+    // KUVERT_ORIGIN/TAFEL_ORIGIN are only required when that producer is
+    // actually enabled (present in GLOCKE_EVENT_SOURCES) - a deployment
+    // without Kuvert or Tafel renders notifications with a relative
+    // actionUrl instead of failing to start (see renderNotification in
+    // processor.ts, which already treats a missing source origin as "no
+    // absolute link" rather than an error).
     sourceOrigins: {
-      kuvert: actionOrigin(required(env, 'KUVERT_ORIGIN'), 'KUVERT_ORIGIN'),
-      tafel: actionOrigin(required(env, 'TAFEL_ORIGIN'), 'TAFEL_ORIGIN'),
+      kuvert: sources.includes('kuvert') ? actionOrigin(required(env, 'KUVERT_ORIGIN'), 'KUVERT_ORIGIN') : undefined,
+      tafel: sources.includes('tafel') ? actionOrigin(required(env, 'TAFEL_ORIGIN'), 'TAFEL_ORIGIN') : undefined,
     },
     maxSkewSeconds: integer(env, 'GLOCKE_MAX_SKEW_SECONDS', 300, 0, 86_400),
     maxEventBytes: integer(env, 'GLOCKE_MAX_EVENT_BYTES', 65_536, 1, 1_048_576),
