@@ -11,14 +11,14 @@ RUN apk add --no-cache python3 make g++
 RUN pnpm install --frozen-lockfile --filter frontend --filter @zudar107/schloss-ui
 COPY schloss-ui ./schloss-ui
 RUN pnpm --filter @zudar107/schloss-ui build
-ARG VITE_SCHLUSSEL_URL=http://localhost:4001
-ENV VITE_SCHLUSSEL_URL=$VITE_SCHLUSSEL_URL
-ARG VITE_SCHLOSS_URL=http://localhost:3000
-ENV VITE_SCHLOSS_URL=$VITE_SCHLOSS_URL
 COPY frontend ./frontend
 RUN pnpm --filter frontend build
 
 FROM caddy:2-alpine AS runner
+RUN apk add --no-cache jq && mkdir -p /config
 COPY --from=builder /app/frontend/dist /srv
 COPY frontend/Caddyfile /etc/caddy/Caddyfile
+COPY --chmod=755 frontend/entrypoint.sh /usr/local/bin/frontend-entrypoint
 EXPOSE 80
+ENTRYPOINT ["/usr/local/bin/frontend-entrypoint"]
+CMD ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]

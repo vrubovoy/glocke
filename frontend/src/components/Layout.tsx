@@ -9,9 +9,7 @@ import { useAuth } from '../hooks/useAuth'
 import { apiClient } from '../lib/api'
 import { buildSchluesselAccountUrl, buildSchluesselLogoutUrl } from '../lib/authRedirect'
 import { unsubscribeLocalPush } from '../lib/push/localSubscription'
-
-const schlossUrl = (import.meta.env.VITE_SCHLOSS_URL as string | undefined) ?? 'http://localhost:3000'
-const schluesselUrl = (import.meta.env.VITE_SCHLUSSEL_URL as string | undefined) ?? 'http://localhost:4001'
+import { getRuntimeConfig } from '../lib/runtimeConfig'
 
 const SIDEBAR_WIDTH_STORAGE_KEY = 'glocke-sidebar-width'
 
@@ -39,6 +37,7 @@ function renderNavLink({ to, icon, label, collapsed, style, onClick, onMouseEnte
 export function Layout({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth()
   const { pathname } = useLocation()
+  const { schlossUrl, schlusselUrl } = getRuntimeConfig()
   const [mobileOpen, setMobileOpen] = useState(false)
   const notificationState = useUnreadNotifications({
     glockeOrigin: window.location.origin,
@@ -46,7 +45,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     apiClient,
   })
   const avatarUrl = useAvatarUrl({
-    schluesselOrigin: schluesselUrl,
+    schluesselOrigin: schlusselUrl,
     userId: user?.id ?? null,
     apiClient,
   })
