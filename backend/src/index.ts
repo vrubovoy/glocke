@@ -4,13 +4,11 @@ import {
   createAuthMiddleware,
   createExportAuthMiddleware,
 } from '@zudar107/schloss-server-kit'
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 import { eq, sql } from 'drizzle-orm'
 import { createHash } from 'node:crypto'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { createApp } from './app.js'
 import { db, sqlite } from './db/index.js'
+import { parseMigrateOnStartup, prepareDatabase } from './db/migrate.js'
 import { users, userTombstones } from './db/schema.js'
 import { createHttpApp } from './http.js'
 import { createProcessor } from './processor.js'
@@ -23,8 +21,7 @@ import { loadConfig } from './config.js'
 import { deletionsRouter } from './deletions.js'
 
 const config = loadConfig()
-const migrationsFolder = join(dirname(fileURLToPath(import.meta.url)), 'db/migrations')
-migrate(db, { migrationsFolder })
+prepareDatabase(db, sqlite, parseMigrateOnStartup(process.env['MIGRATE_ON_STARTUP']))
 
 const repository = new SqliteNotificationRepository(db)
 const pushRepository = new SqlitePushRepository(db)

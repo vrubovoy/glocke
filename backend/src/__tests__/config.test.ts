@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs'
 import { createCorsMiddleware } from '@zudar107/schloss-server-kit'
 import { Hono } from 'hono'
 import webPush from 'web-push'
-import { loadConfig } from '../config.js'
+import { loadConfig, resolveSecret } from '../config.js'
+import type { SecretFileAccess } from '../config.js'
 
 const LOCAL_FRONTEND_ORIGINS = [
   'https://localhost',
@@ -283,5 +284,93 @@ describe('browser push configuration', () => {
       expect(name in env).toBe(false)
     }
     expect(() => loadConfig(env)).not.toThrow()
+  })
+})
+
+function files(contents: Buffer | string, options: { regular?: boolean; size?: number; failRead?: boolean } = {}): SecretFileAccess {
+  const bytes = Buffer.isBuffer(contents) ? contents : Buffer.from(contents)
+  return {
+    stat: () => {
+      if (options.failRead) throw new Error('injected stat failure')
+      return { isFile: () => options.regular ?? true, size: options.size ?? bytes.length }
+    },
+    read: () => {
+      if (options.failRead) throw new Error('injected read failure')
+      return bytes
+    },
+  }
+}
+
+describe('resolveSecret', () => {
+  it('reads the direct value when only that is set', () => {
+    expect(resolveSecret({ TEST_SECRET: 'value' }, 'TEST_SECRET')).toBe('value')
+  })
+
+  it('reads a secret file, removes exactly one terminal newline, and preserves other bytes', () => {
+    const secret = `${' s'.repeat(16)}\n\n`
+    expect(resolveSecret(
+      { TEST_SECRET_FILE: '/run/secrets/test' },
+      'TEST_SECRET',
+      files(secret),
+    )).toBe(secret.slice(0, -1))
+  })
+
+  it('accepts CRLF and removes it as one terminal line ending', () => {
+    expect(resolveSecret(
+      { TEST_SECRET_FILE: '/run/secrets/test' },
+      'TEST_SECRET',
+      files(`${'g'.repeat(32)}\r\n`),
+    )).toBe('g'.repeat(32))
+  })
+
+  it.each([
+    ['both direct and file values', { TEST_SECRET: 'x'.repeat(32), TEST_SECRET_FILE: '/secret' }, files('x'.repeat(32))],
+    ['file path whitespace', { TEST_SECRET_FILE: ' /secret' }, files('x'.repeat(32))],
+    ['non-regular file', { TEST_SECRET_FILE: '/secret' }, files('x'.repeat(32), { regular: false })],
+    ['file over 64 KiB', { TEST_SECRET_FILE: '/secret' }, files('x'.repeat(32), { size: 65_537 })],
+    ['read failure', { TEST_SECRET_FILE: '/secret' }, files('x'.repeat(32), { failRead: true })],
+    ['invalid UTF-8', { TEST_SECRET_FILE: '/secret' }, files(Buffer.from([0xc3, 0x28]))],
+    ['empty after newline removal', { TEST_SECRET_FILE: '/secret' }, files('\n')],
+    ['NUL byte', { TEST_SECRET_FILE: '/secret' }, files(`${'x'.repeat(32)}\0`)],
+    ['neither value set', {}, files('unused')],
+  ])('rejects %s', (_case, env, access) => {
+    expect(() => resolveSecret(env, 'TEST_SECRET', access)).toThrow()
+  })
+})
+
+describe('secret file indirection for loadConfig', () => {
+  it('accepts the Glocke-to-Schlussel HMAC secret from a file', () => {
+    const env = validEnv()
+    delete env['GLOCKE_TO_SCHLUSSEL_HMAC_SECRET']
+    env['GLOCKE_TO_SCHLUSSEL_HMAC_SECRET_FILE'] = '/run/secrets/glocke-to-schlussel'
+    expect(loadConfig(env, files('glocke-to-schlussel-secret-32-bytes')).schlusselSecret)
+      .toBe('glocke-to-schlussel-secret-32-bytes')
+  })
+
+  it('accepts a producer secret from a file', () => {
+    const env = validEnv()
+    delete env['GLOCKE_SOURCE_SECRET_SCHLUSSEL']
+    env['GLOCKE_SOURCE_SECRET_SCHLUSSEL_FILE'] = '/run/secrets/schlussel-producer'
+    expect(loadConfig(env, files('schlussel-to-glocke-secret-32-bytes')).producers['schlussel']?.secret)
+      .toBe('schlussel-to-glocke-secret-32-bytes')
+  })
+
+  it('accepts the VAPID private key from a file when push is enabled', () => {
+    const vapid = webPush.generateVAPIDKeys()
+    const env: NodeJS.ProcessEnv = {
+      ...validEnv(),
+      GLOCKE_BROWSER_PUSH_ENABLED: 'true',
+      GLOCKE_VAPID_SUBJECT: 'mailto:push@glocke.example.test',
+      GLOCKE_VAPID_PUBLIC_KEY: vapid.publicKey,
+      GLOCKE_VAPID_PRIVATE_KEY_FILE: '/run/secrets/vapid-private',
+      GLOCKE_PUSH_ALLOWED_ENDPOINT_HOSTS: 'fcm.googleapis.com',
+    }
+    expect(loadConfig(env, files(vapid.privateKey)).push.vapid?.privateKey).toBe(vapid.privateKey)
+  })
+
+  it('rejects both the direct value and the file being set for the same secret', () => {
+    const env = validEnv()
+    env['GLOCKE_TO_SCHLUSSEL_HMAC_SECRET_FILE'] = '/run/secrets/glocke-to-schlussel'
+    expect(() => loadConfig(env, files('unused'))).toThrow(/mutually exclusive/)
   })
 })

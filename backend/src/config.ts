@@ -1,6 +1,63 @@
 import { createECDH, timingSafeEqual } from 'node:crypto'
+import { readFileSync, statSync } from 'node:fs'
 import type { ProducerCredential } from './app.js'
 import { registeredEventSources } from './event-registry.js'
+
+const MAX_SECRET_FILE_BYTES = 64 * 1024
+
+export interface SecretFileAccess {
+  stat(path: string): { isFile(): boolean; size: number }
+  read(path: string): Buffer
+}
+
+const defaultSecretFileAccess: SecretFileAccess = {
+  stat: statSync,
+  read: readFileSync,
+}
+
+// Every secret-shaped env var below (per-producer HMAC secrets, the
+// Glocke->Schlussel HMAC secret, the VAPID private key) accepts either
+// `NAME` directly or `NAME_FILE` pointing at a file holding it, so a
+// deployment can mount a secret file instead of putting the raw value in
+// the container's environment. `files` is only overridden in tests.
+export function resolveSecret(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  files: SecretFileAccess = defaultSecretFileAccess,
+): string {
+  const direct = env[name] || undefined
+  const fileName = `${name}_FILE`
+  const path = env[fileName] || undefined
+  if (direct && path) throw new Error(`${name} and ${fileName} are mutually exclusive`)
+
+  let value = direct
+  if (path) {
+    if (path.trim() !== path) throw new Error(`${fileName} must not have surrounding whitespace`)
+    let bytes: Buffer
+    try {
+      const metadata = files.stat(path)
+      if (!metadata.isFile()) throw new Error('not a regular file')
+      if (metadata.size > MAX_SECRET_FILE_BYTES) throw new Error('file is too large')
+      bytes = files.read(path)
+    } catch {
+      throw new Error(`${fileName} must reference a readable regular file no larger than 64 KiB`)
+    }
+    if (bytes.length > MAX_SECRET_FILE_BYTES) {
+      throw new Error(`${fileName} must reference a readable regular file no larger than 64 KiB`)
+    }
+    try {
+      value = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    } catch {
+      throw new Error(`${fileName} must contain valid UTF-8`)
+    }
+    if (value.endsWith('\r\n')) value = value.slice(0, -2)
+    else if (value.endsWith('\n')) value = value.slice(0, -1)
+    if (!value || value.includes('\0')) throw new Error(`${fileName} must contain a non-empty secret without NUL bytes`)
+  }
+
+  if (!value) throw new Error(`${name} or ${fileName} is required`)
+  return value
+}
 
 export interface RuntimeConfig {
   port: number
@@ -112,7 +169,7 @@ function vapidSubject(value: string, name: string): string {
   throw new Error(`${name} must be a mailto: address or an HTTPS URL`)
 }
 
-function loadPushConfig(env: NodeJS.ProcessEnv): PushConfig {
+function loadPushConfig(env: NodeJS.ProcessEnv, files: SecretFileAccess): PushConfig {
   const enabled = boolean(env, 'GLOCKE_BROWSER_PUSH_ENABLED', false)
   const fetchTimeoutMs = integer(env, 'GLOCKE_PUSH_FETCH_TIMEOUT_MS', 10_000, 1, 3_590_000)
   const workerLeaseMs = integer(env, 'GLOCKE_PUSH_WORKER_LEASE_MS', 30_000, 1, 3_600_000)
@@ -133,7 +190,7 @@ function loadPushConfig(env: NodeJS.ProcessEnv): PushConfig {
 
   const subject = vapidSubject(required(env, 'GLOCKE_VAPID_SUBJECT'), 'GLOCKE_VAPID_SUBJECT')
   const publicKey = required(env, 'GLOCKE_VAPID_PUBLIC_KEY')
-  const privateKey = required(env, 'GLOCKE_VAPID_PRIVATE_KEY')
+  const privateKey = resolveSecret(env, 'GLOCKE_VAPID_PRIVATE_KEY', files)
   let derivedPublicKey: Buffer
   try {
     const ecdh = createECDH('prime256v1')
@@ -152,7 +209,10 @@ function loadPushConfig(env: NodeJS.ProcessEnv): PushConfig {
   return { enabled: true, vapid: { subject, publicKey, privateKey }, allowedProviderHosts, ...shared }
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig {
+export function loadConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  files: SecretFileAccess = defaultSecretFileAccess,
+): RuntimeConfig {
   const sources = required(env, 'GLOCKE_EVENT_SOURCES').split(',').map((value) => value.trim())
   if (sources.some((source) => !/^[a-z][a-z0-9-]{0,63}$/.test(source)) || new Set(sources).size !== sources.length) {
     throw new Error('GLOCKE_EVENT_SOURCES must contain unique lowercase service names')
@@ -165,11 +225,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
     const suffix = source.toUpperCase().replaceAll('-', '_')
     return [source, {
       keyId: keyId(required(env, `GLOCKE_SOURCE_KEY_ID_${suffix}`), `GLOCKE_SOURCE_KEY_ID_${suffix}`),
-      secret: secret(required(env, `GLOCKE_SOURCE_SECRET_${suffix}`), `GLOCKE_SOURCE_SECRET_${suffix}`),
+      secret: secret(resolveSecret(env, `GLOCKE_SOURCE_SECRET_${suffix}`, files), `GLOCKE_SOURCE_SECRET_${suffix}`),
     }]
   }))
   const origins = required(env, 'ALLOWED_ORIGINS').split(',').map((value) => origin(value.trim(), 'ALLOWED_ORIGINS'))
-  const schlusselSecret = secret(required(env, 'GLOCKE_TO_SCHLUSSEL_HMAC_SECRET'), 'GLOCKE_TO_SCHLUSSEL_HMAC_SECRET')
+  const schlusselSecret = secret(resolveSecret(env, 'GLOCKE_TO_SCHLUSSEL_HMAC_SECRET', files), 'GLOCKE_TO_SCHLUSSEL_HMAC_SECRET')
   const configuredSecrets = [schlusselSecret, ...Object.values(producers).map((credential) => credential.secret)]
   if (new Set(configuredSecrets).size !== configuredSecrets.length) {
     throw new Error('Every producer and Glocke-to-Schlussel HMAC credential must use a distinct secret')
@@ -207,6 +267,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RuntimeConfig 
     // Falls back to a harmless local-dev default rather than being
     // required, since only Browser Push actually depends on it.
     glockePublicUrl: origin(env['GLOCKE_PUBLIC_URL']?.trim() || 'http://localhost:5177', 'GLOCKE_PUBLIC_URL'),
-    push: loadPushConfig(env),
+    push: loadPushConfig(env, files),
   }
 }
