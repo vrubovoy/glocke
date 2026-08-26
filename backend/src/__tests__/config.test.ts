@@ -155,10 +155,10 @@ describe('runtime configuration', () => {
     })
   })
 
-  it('maps Tor public URL variables into backend action origins in Compose', () => {
+  it('maps Tor public URL variables into backend action origins in Compose, defaulting to disabled', () => {
     const compose = readFileSync(new URL('../../../docker-compose.yml', import.meta.url), 'utf8')
-    expect(compose).toContain('KUVERT_ORIGIN: ${KUVERT_URL:-https://kuvert.localhost}')
-    expect(compose).toContain('TAFEL_ORIGIN: ${TAFEL_URL:-https://tafel.localhost}')
+    expect(compose).toContain('KUVERT_ORIGIN: ${KUVERT_URL:-}')
+    expect(compose).toContain('TAFEL_ORIGIN: ${TAFEL_URL:-}')
   })
 
   it('configures exact CORS access for every local Hof frontend', async () => {

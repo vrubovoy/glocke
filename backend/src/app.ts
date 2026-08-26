@@ -12,6 +12,7 @@ import type { Authenticate, EventEnvelope, NotificationRepository, ResolveRecipi
 import { eventRegistryByType } from './event-registry.js'
 import type { PushRepository } from './push-repository.js'
 import { validatePushSubscriptionInput } from './push-validation.js'
+import { buildInfo } from './build-info.js'
 
 export interface PushApiConfig {
   available: boolean
@@ -109,7 +110,7 @@ export function createApp(options: CreateAppOptions): Hono<ExportAuthEnv> {
   const requireExportAuth = options.requireExportAuth ?? testExportAuth(options)
   const now = options.now ?? (() => new Date())
 
-  app.get('/health', (context) => context.json({ status: 'ok', service: 'Glocke' }))
+  app.get('/health', (context) => context.json({ status: 'ok', service: 'Glocke', ...buildInfo }))
   app.get('/ready', async (context) => {
     const ready = await (options.ready?.() ?? Promise.resolve(true))
     return ready
