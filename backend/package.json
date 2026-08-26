@@ -6,10 +6,11 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "tsc && node -e \"require('node:fs').cpSync('src/db/migrations', 'dist/db/migrations', { recursive: true })\"",
     "start": "node dist/index.js",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
+    "db:migrate": "node dist/migrate.js",
+    "db:migrate:dev": "drizzle-kit migrate",
     "lint": "oxlint",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage"

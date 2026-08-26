@@ -8,7 +8,7 @@ import { eq, sql } from 'drizzle-orm'
 import { createHash } from 'node:crypto'
 import { createApp } from './app.js'
 import { db, sqlite } from './db/index.js'
-import { parseMigrateOnStartup, prepareDatabase } from './db/migrate.js'
+import { assertSchemaCurrent, parseMigrateOnStartup, prepareDatabase } from './db/migrate.js'
 import { users, userTombstones } from './db/schema.js'
 import { createHttpApp } from './http.js'
 import { createProcessor } from './processor.js'
@@ -75,6 +75,7 @@ const service = createApp({
   ready: async () => {
     try {
       db.get(sql`select 1`)
+      assertSchemaCurrent(sqlite)
       return true
     } catch {
       return false

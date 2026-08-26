@@ -282,10 +282,10 @@ HTTPS with its local CA; follow Tor's README to trust that CA in the browser.
 
 ## Operations
 
-- `GET /health` is liveness; `GET /ready` checks SQLite.
+- `GET /health` is liveness and reports bounded `SERVICE_VERSION`/`BUILD_SHA` metadata (package version and `unknown` fallbacks); `GET /ready` verifies SQLite and the current migration ledger. Compose exposes these as `GLOCKE_SERVICE_VERSION` and `GLOCKE_BUILD_SHA`.
 - `GET /exports/me` accepts normal access JWTs and delegated export JWTs; delegated tokens are rejected by all ordinary notification APIs.
 - `GET /openapi.json` requires an authenticated administrator. The frontend exposes it at admin-only `/docs`.
-- Migrations run at startup. Generate schema changes with `pnpm db:generate`.
+- Run `pnpm build && pnpm db:migrate` as a dedicated deployment step. Unset, empty, or `false` `MIGRATE_ON_STARTUP` only asserts the schema; explicit `true` enables startup migration. `pnpm db:migrate:dev` uses Drizzle Kit for development only.
 - The action-link hardening migration clears links stored before the central
   event registry; new links are rendered only from trusted configured origins.
 - `SIGINT` and `SIGTERM` stop the HTTP server and new worker claims, wait for the active worker, then close SQLite. A 10-second fail-safe exits nonzero if graceful shutdown does not finish.
