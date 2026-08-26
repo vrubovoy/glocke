@@ -127,6 +127,23 @@ describe('runtime configuration', () => {
     expect(() => loadConfig({ ...validEnv(), [name]: value })).toThrow(/origin|HTTPS/i)
   })
 
+  it('does not require an action origin for a producer absent from GLOCKE_EVENT_SOURCES', () => {
+    const env = validEnv()
+    delete env['KUVERT_ORIGIN']
+    delete env['GLOCKE_SOURCE_KEY_ID_KUVERT']
+    delete env['GLOCKE_SOURCE_SECRET_KUVERT']
+    const config = loadConfig({ ...env, GLOCKE_EVENT_SOURCES: 'schlussel,tafel,zettel' })
+    expect(config.sourceOrigins.kuvert).toBeUndefined()
+    expect(config.sourceOrigins.tafel).toBe('https://tafel.example.test')
+    expect(config.producers['kuvert']).toBeUndefined()
+  })
+
+  it('still requires the action origin for a producer that is enabled', () => {
+    const env = validEnv()
+    delete env['KUVERT_ORIGIN']
+    expect(() => loadConfig(env)).toThrow(/KUVERT_ORIGIN/)
+  })
+
   it('accepts HTTP action origins only for direct localhost development', () => {
     expect(loadConfig({
       ...validEnv(),

@@ -297,4 +297,27 @@ describe('inbox processing', () => {
       { source: 'schlussel', actionUrl: '/settings' },
     ])
   })
+
+  it('renders a relative action URL when the producing service has no configured source origin (e.g. disabled in this deployment)', async () => {
+    const envelope = eventEnvelope({
+      id: '10000000-0000-4000-8000-000000000023',
+      source: 'kuvert',
+      type: 'kuvert.goal.completed.v1',
+      payload: { recipientId: 'user-1', goalName: 'Резервный фонд' },
+    })
+    repository.seedInbox(inboxRecord({ envelope }))
+    const worker = createProcessor({
+      repository,
+      resolveRecipient: async (userId) => ({ userId, notifyInApp: true, notifyBrowserPush: false }),
+      sourceOrigins: { tafel: 'https://tafel.example.test' },
+      now: () => new Date('2026-08-07T10:00:02.000Z'),
+      createId: () => 'notification-no-origin',
+      createLeaseId: () => crypto.randomUUID(),
+    })
+
+    expect(await worker.processNext()).toBe('processed')
+    expect(repository.notifications).toEqual([
+      expect.objectContaining({ source: 'kuvert', actionUrl: '/goals' }),
+    ])
+  })
 })

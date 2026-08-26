@@ -210,7 +210,7 @@ The Settings page downloads the current user's Glocke snapshot directly as
 | `SCHLUSSEL_JWKS_URL` / `JWT_ISSUER` | Schlüssel JWKS endpoint and exact expected JWT issuer |
 | `SCHLUSSEL_INTERNAL_URL` | Origin used for signed recipient-preference lookups |
 | `ALLOWED_ORIGINS` | Exact direct-run comma-separated CORS origins; Compose maps `GLOCKE_ALLOWED_ORIGINS` to it and defaults to every local Hof frontend: `https://localhost`, `https://auth.localhost`, `https://kuvert.localhost`, `https://tafel.localhost`, `https://zettel.localhost`, and `https://glocke.localhost` |
-| `KUVERT_ORIGIN` / `TAFEL_ORIGIN` | Direct-run exact trusted origins used to render absolute source action links; HTTPS is required except for `localhost`, `127.0.0.1`, or `[::1]` development origins |
+| `KUVERT_ORIGIN` / `TAFEL_ORIGIN` | Direct-run exact trusted origins used to render absolute source action links; HTTPS is required except for `localhost`, `127.0.0.1`, or `[::1]` development origins. Each is required only if that producer is listed in `GLOCKE_EVENT_SOURCES` - a deployment without Kuvert or Tafel renders that producer's notifications with a relative `actionUrl` instead |
 | `KUVERT_URL` / `TAFEL_URL` | Compose/Tor public service origins mapped to backend `KUVERT_ORIGIN` / `TAFEL_ORIGIN` |
 | `GLOCKE_EVENT_SOURCES` | Comma-separated, unique lowercase producer service names |
 | `GLOCKE_SOURCE_KEY_ID_<SOURCE>` / `GLOCKE_SOURCE_SECRET_<SOURCE>` | Runtime credential for each source; hyphens in the uppercased source become underscores |
