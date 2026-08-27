@@ -4,11 +4,11 @@ import {
   createAuthMiddleware,
   createExportAuthMiddleware,
 } from '@zudar107/schloss-server-kit'
-import { eq, sql } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import { createHash } from 'node:crypto'
 import { createApp } from './app.js'
 import { db, sqlite } from './db/index.js'
-import { assertSchemaCurrent, parseMigrateOnStartup, prepareDatabase } from './db/migrate.js'
+import { parseMigrateOnStartup, prepareDatabase } from './db/migrate.js'
 import { users, userTombstones } from './db/schema.js'
 import { createHttpApp } from './http.js'
 import { createProcessor } from './processor.js'
@@ -19,6 +19,7 @@ import { SqliteNotificationRepository } from './repository.js'
 import { createSchlusselRecipientResolver } from './schlussel.js'
 import { loadConfig } from './config.js'
 import { deletionsRouter } from './deletions.js'
+import { createReadinessCheck } from './readiness.js'
 
 const config = loadConfig()
 prepareDatabase(db, sqlite, parseMigrateOnStartup(process.env['MIGRATE_ON_STARTUP']))
@@ -72,15 +73,7 @@ const service = createApp({
   requireExportAuth,
   maxSkewSeconds: config.maxSkewSeconds,
   maxEventBytes: config.maxEventBytes,
-  ready: async () => {
-    try {
-      db.get(sql`select 1`)
-      assertSchemaCurrent(sqlite)
-      return true
-    } catch {
-      return false
-    }
-  },
+  ready: createReadinessCheck({ db, sqlite, jwksUrl: config.jwksUrl }),
   pushRepository,
   resolveRecipient,
   pushConfig: {
