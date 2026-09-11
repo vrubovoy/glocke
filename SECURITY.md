@@ -8,6 +8,31 @@ Glocke is deployed continuously from `main`; no release branches are maintained.
 
 Do not open a public issue for vulnerabilities. Use GitHub's private **Report a vulnerability** flow under this repository's Security tab. An initial response is best-effort, normally within a few days.
 
+## Image publish integrity
+
+`.github/workflows/test.yml`'s `publish` job pushes signed, attested
+container images to `ghcr.io/vrubovoy/glocke-backend` and
+`ghcr.io/vrubovoy/glocke-frontend`. Its integrity depends on repository
+settings kept outside this file:
+
+- **Require actions pinned to a full-length commit SHA**
+  (`actions/permissions` → `sha_pinning_required: true`). Every `uses:`
+  here is already SHA-pinned.
+- **Environment `publish`** with a deployment branch policy allowing only
+  the `main` branch and the `v*` tag pattern.
+- **Two tag rulesets on `refs/tags/v*`**: one blocking `deletion` /
+  `non_fast_forward` / `update` for everyone; one restricting `creation`
+  to a repository admin (CI never creates a `v*` tag — a human cuts the
+  release).
+
+**Threat model (Model 1).** Every same-repo actor with write access is
+trusted; today the only one is a repository admin. A feature branch
+controls its own copy of `test.yml` and could drop `environment:` and
+request `packages: write`, so the Environment policy gates an *unmodified*
+workflow, not a hostile write-collaborator. It still cannot create a `v*`
+tag (ruleset) or forge the `@refs/tags/vX.Y.Z` Sigstore identity a
+consumer (`hof-ops`'s release lock) checks.
+
 ## Scope
 
 Highest-priority reports include cross-account notification access, signature bypass or replay acceptance outside the configured skew, payload identity confusion, leaked producer credentials, unsafe action links, and auth handoff issues. Reports concerning availability or durable inbox loss are also in scope.
